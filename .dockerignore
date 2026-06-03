@@ -1,0 +1,13 @@
+# Keep the Docker build context minimal and free of runtime data. The Dockerfile
+# only COPYs supervisord.conf, rootfs/, and config/ — everything else is excluded.
+# Most importantly, home/ is excluded so Haggai's runtime data (Codex/GitHub/SSH
+# creds, his files) is never sent to the Docker daemon as build context.
+.git
+.gitignore
+.dockerignore
+home/
+docs/
+README.md
+setup.sh
+teardown.sh
+docker-compose.yml

@@ -1,0 +1,23 @@
+# RustDesk options for the haggai_computer container.
+# These [options] are copied verbatim from a proven, working RustDesk
+# configuration — i.e. they are known-good on this exact RustDesk 1.4.6.
+# Seeded into ~/.config/rustdesk/RustDesk2.toml by the entrypoint on first run
+# (only if absent). The permanent password itself lives in RustDesk.toml and is
+# set by ./setup.sh, NOT here — no secret is ever stored in this repo.
+#
+#   direct-server          'Y'  -> bind the Direct IP Access listener (TCP 21118)
+#                                  so Haggai can connect straight to <ip>:21128
+#                                  with no relay (sovereign).
+#   access-mode            'full' -> keyboard, mouse, clipboard, file transfer.
+#   approve-mode           'password' -> auto-accept incoming connections that
+#                                  present the permanent password (no manual
+#                                  "Accept" click — true unattended access).
+#   verification-method    'use-permanent-password'
+#   enable-hwcodec         'N'  -> software (CPU) video encoding only; this
+#                                  container never touches the NVIDIA GPU.
+[options]
+direct-server = 'Y'
+access-mode = 'full'
+approve-mode = 'password'
+verification-method = 'use-permanent-password'
+enable-hwcodec = 'N'

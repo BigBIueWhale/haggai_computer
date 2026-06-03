@@ -1,0 +1,5 @@
+# This directory is bind-mounted to /home/user inside the container — it is
+# Haggai's persistent, isolated home. It starts empty; the container seeds his
+# dotfiles, RustDesk config, and Codex config here on first run, and everything
+# he creates afterwards persists here on the host. Do not delete this directory
+# (it is the bind-mount target); use ./teardown.sh --purge to clear its contents.

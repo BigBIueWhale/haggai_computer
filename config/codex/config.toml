@@ -1,0 +1,17 @@
+# OpenAI Codex configuration for the haggai_computer container.
+# Seeded into ~/.codex/config.toml by the entrypoint on first run (only if absent;
+# Haggai owns it thereafter and may tune it).
+#
+# Why sandbox_mode = "danger-full-access":
+#   Codex normally sandboxes the commands it runs with the Linux kernel's
+#   Landlock + seccomp. Inside a Docker container that sandbox usually CANNOT
+#   initialize, and Codex errors out ("the combination of seccomp/landlock that
+#   Codex uses for sandboxing is not supported in this environment"). OpenAI's
+#   documented answer for "Codex inside an already-isolated container" is to run
+#   with the sandbox disabled and let the CONTAINER be the isolation boundary —
+#   which is exactly our situation. We do NOT weaken Docker (no SYS_ADMIN, no
+#   seccomp=unconfined) to make a nested sandbox work; the container is the wall.
+#
+# Approvals are left at Codex's default so Haggai still consciously approves
+# actions; he can set approval_policy = "never" for full-auto if he wants it.
+sandbox_mode = "danger-full-access"

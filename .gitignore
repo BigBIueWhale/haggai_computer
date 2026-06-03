@@ -1,0 +1,18 @@
+# =============================================================================
+# .gitignore — keep SECRETS and runtime state out of this (public) repository.
+# =============================================================================
+
+# Haggai's runtime home, bind-mounted to /home/user. After ./setup.sh runs this
+# directory fills with his Codex auth token (~/.codex/auth.json), GitHub
+# credentials (~/.config/gh), SSH keys (~/.ssh), the RustDesk *encrypted*
+# permanent password (~/.config/rustdesk/RustDesk.toml), and all of his work.
+# NONE of that may ever be committed — only the placeholder is tracked.
+/home/*
+!/home/.gitkeep
+
+# Editor / OS noise
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

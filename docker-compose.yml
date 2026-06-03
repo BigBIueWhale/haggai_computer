@@ -1,0 +1,69 @@
+# =============================================================================
+# docker-compose.yml — deployment of Haggai's persistent desktop container.
+#
+# SPECIFIC, NOT CONFIGURABLE: every value here is a deliberate constant. The only
+# runtime input to the system is the password, taken by ./setup.sh. Manage the
+# container with ./setup.sh and ./teardown.sh — see README.md. Do NOT
+# `docker compose down` / recreate in normal operation: that discards the
+# writable layer where Haggai's `sudo apt install` packages live (see README
+# "Persistence").
+# =============================================================================
+services:
+  haggai_computer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: haggai_computer:1.4.6
+    container_name: haggai_computer
+    hostname: haggai-computer
+
+    # --- Sovereign reach -----------------------------------------------------
+    # Publish the in-container RustDesk Direct-IP listener (21118) on the host at
+    # the single fixed port 21128, on ALL interfaces (0.0.0.0) so it survives any
+    # future LAN-IP change. The box is DMZ'd, so this is reachable from the public
+    # internet at <public-ip>:21128 — that is the intended sovereign path (no
+    # relay). It is the ONE new internet-reachable port; docs/SECURITY.md carries
+    # the matching verify_network_security.py allow-list edit you must apply.
+    ports:
+      - "21128:21118/tcp"
+
+    # --- Isolation -----------------------------------------------------------
+    # The persistent, isolated home is the ONLY part of the host the container can
+    # see. Haggai cannot reach your files, your RustDesk/SSH/TeamViewer creds, or
+    # anything else on the box.
+    volumes:
+      - ./home:/home/user
+
+    # --- Persistence ---------------------------------------------------------
+    # Survive host reboots/power-cuts: the daemon restarts THIS container (with its
+    # writable layer intact, so apt installs persist). Do not change to "no".
+    restart: unless-stopped
+
+    # --- Resource caps (so Haggai cannot starve the host's own workloads) -----
+    cpus: 8.0
+    mem_limit: 16g
+    memswap_limit: 16g          # == mem_limit ⇒ no swap blow-out
+    pids_limit: 4096
+    shm_size: 1g                # XFCE + browsers want more than the 64m default
+
+    # --- Hardening / blast-radius -------------------------------------------
+    # NO privileged, NO docker.sock, NO host network, NO NVIDIA runtime. Default
+    # seccomp + AppArmor are KEPT ON (never seccomp=unconfined). We deliberately
+    # do NOT use cap_drop:ALL or no-new-privileges here, because both BREAK the
+    # required `sudo apt install` (no-new-privileges blocks sudo's setuid
+    # elevation; cap_drop:ALL strips the CHOWN/SETUID/DAC_OVERRIDE/NET_RAW that
+    # apt/dpkg/sudo and Haggai's own net tools — nmap, tcpdump, ping — need). The
+    # default Docker capability set + the structural limits above are the
+    # isolation boundary. See docs/SECURITY.md for the full rationale and the
+    # optional userns-remap hardening.
+    init: true                  # reap zombies (tini as PID 1)
+
+    # --- Health --------------------------------------------------------------
+    # "Healthy" == the RustDesk Direct-IP listener is up inside the container.
+    # setup.sh waits on this before setting the password.
+    healthcheck:
+      test: ["CMD-SHELL", "ss -ltn | grep -q ':21118 '"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
