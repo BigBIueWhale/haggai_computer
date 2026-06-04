@@ -112,23 +112,26 @@ log "Container is healthy."
 #     capability — one reason cap_drop:ALL is not used);
 #   * the server (uid 1000) then persists the encrypted password into
 #     /home/user/.config/rustdesk/RustDesk.toml AS `user`. That file is the ONLY
-#     authoritative success signal, and we read it back to confirm.
+#     authoritative success signal.
 # THE CRITICAL GOTCHA: `rustdesk --password` sets the password over IPC almost
 # immediately, but the 1.4.7 Flutter binary then leaves a process holding its stdio
-# open and never returns. So ANY *foreground* `docker compose exec` that runs it — or
-# that later kills it — inherits that open pipe and hangs waiting for EOF, and
-# `timeout` cannot rescue it (a SIGTERM to the compose client does not tear down the
-# in-container exec session; observed: a `timeout 30` still alive after 90 minutes).
-# Therefore EVERYTHING that touches the Flutter client runs DETACHED (`-d`, which
-# returns the instant it is launched): both the password set AND the cleanup kill.
-# The ONLY foreground exec is the read-back — a plain grep that never touches the
-# client, so it always returns fast — and that file is the authoritative success
-# signal. We (re)fire on an interval rather than every poll, and never kill an
-# in-flight attempt, so a slow first try is given time instead of being cut off.
+# open and never returns. Worse, a *foreground* `docker compose exec` against this
+# container can wedge for that same reason even when the command it runs is trivial
+# (even a grep), and `timeout` cannot rescue it — a SIGTERM to the compose client
+# does not tear down the in-container exec session (observed: `timeout 30` calls
+# still alive after minutes). So the rule here is absolute: NO foreground
+# `docker compose exec`, ever.
+#   * The password set runs DETACHED (`-d`, returns immediately).
+#   * The read-back does NOT exec at all: ./home is bind-mounted to /home/user, so
+#     RustDesk.toml is the host file $RD_TOML below — we grep it directly on the host
+#     (host runs as uid 1000, the same uid that owns the file).
+#   * We (re)fire on an interval rather than every poll, and never kill an in-flight
+#     attempt, so a slow first try is given time instead of being cut off.
 # DISPLAY is set because the binary may touch the UI; the password is passed via an
 # inherited env var, expanded INSIDE the container (single-quoted bash -c) so it
 # never reaches host argv. (A clean ./home — `./teardown.sh --purge` before
 # re-deploying — makes a non-empty password unambiguously mean THIS run set it.)
+RD_TOML="$SCRIPT_DIR/home/.config/rustdesk/RustDesk.toml"   # bind-mounted; host-readable
 log "Setting the RustDesk permanent password..."
 export RD_PASSWORD="$PASSWORD"
 rd_ok=0
@@ -141,27 +144,44 @@ while [ "$SECONDS" -lt "$pw_deadline" ]; do
     last_fire=$SECONDS
   fi
   sleep "$IPC_SLEEP"
-  if timeout "$EXEC_TIMEOUT" docker compose exec -T -u 0 "$SERVICE" \
-       bash -c "grep -Eq \"^password = '.+'\" /home/user/.config/rustdesk/RustDesk.toml" 2>/dev/null; then
+  # Read back on the HOST side of the bind mount — no docker exec, so it can't wedge.
+  if grep -Eq "^password = '.+'" "$RD_TOML" 2>/dev/null; then
     rd_ok=1
     break
   fi
 done
-unset RD_PASSWORD
 [ "$rd_ok" -eq 1 ] \
   || die "RustDesk password was not persisted to RustDesk.toml within ${PW_TIMEOUT}s (is --server up?)."
-# Clean up the detached client(s) — DETACHED, so killing the stuck Flutter process
-# can never wedge the host the way a foreground exec would.
+# Clean up the detached client(s) — DETACHED (pkill excludes its own pid), so it
+# returns at once and killing the stuck Flutter process can't wedge the host.
 docker compose exec -d -u 0 "$SERVICE" pkill -f 'rustdesk --password' >/dev/null 2>&1 || true
 log "RustDesk permanent password set and verified."
 
 # ---- set the 'user' Linux / sudo password to the SAME value ----------------
-# `printf` is a bash builtin (no separate process), so the password is not in the
-# host process list; chpasswd reads "user:<pw>" from stdin (not from argv).
+# /etc/shadow lives in the container's writable layer (NOT bind-mounted), so this
+# must run inside the container — but, per the no-foreground-exec rule above, it runs
+# DETACHED. ONE detached exec sets the password and self-verifies (passwd -S => P),
+# and only on success writes a marker into the bind-mounted home, which we then poll
+# from the HOST. The password rides the already-exported env var (never host argv);
+# chpasswd reads it from stdin inside the container.
+MARK="$SCRIPT_DIR/home/.haggai_linux_pw_ok"
+rm -f "$MARK"
 log "Setting the 'user' Linux/sudo password (same value)..."
-printf 'user:%s\n' "$PASSWORD" | docker compose exec -T -u 0 "$SERVICE" chpasswd
-pw_status="$(docker compose exec -T -u 0 "$SERVICE" passwd -S user | awk '{print $2}')"
-[ "$pw_status" = "P" ] || die "Linux password for 'user' did not take (passwd -S reported '$pw_status')"
+docker compose exec -d -u 0 -e RD_PASSWORD "$SERVICE" bash -c '
+  printf "user:%s\n" "$RD_PASSWORD" | chpasswd \
+    && [ "$(passwd -S user | awk "{print \$2}")" = P ] \
+    && : > /home/user/.haggai_linux_pw_ok
+' >/dev/null 2>&1 || true
+lin_ok=0
+lin_deadline=$(( SECONDS + EXEC_TIMEOUT ))
+while [ "$SECONDS" -lt "$lin_deadline" ]; do
+  [ -f "$MARK" ] && { lin_ok=1; break; }
+  sleep 1
+done
+rm -f "$MARK"
+unset RD_PASSWORD
+[ "$lin_ok" -eq 1 ] \
+  || die "Linux/sudo password for 'user' was not set/verified within ${EXEC_TIMEOUT}s."
 log "Linux/sudo password set and verified."
 
 # ---- done: print how to connect --------------------------------------------
