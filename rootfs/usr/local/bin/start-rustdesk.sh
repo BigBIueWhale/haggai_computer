@@ -1,13 +1,16 @@
 #!/bin/bash
 # start-rustdesk.sh — the RustDesk listener (--server) that binds the Direct-IP
-# port 21118 (TCP) inside the container and captures the X11 desktop on :99.
+# port 21118 (TCP) inside the container, captures the X11 desktop on :99, and (per
+# incoming connection) spawns the GUI `--cm` connection-manager onto :99 — which
+# is why the Xvfb display is mandatory, not just for screen capture.
 #
 # HOME=/home/user so the server reads its options from
 # ~/.config/rustdesk/RustDesk2.toml and persists the permanent password into
 # ~/.config/rustdesk/RustDesk.toml as `user`. XDG_RUNTIME_DIR is the user session
-# dir. (setup.sh's `rustdesk --password` reaches THIS server via a FIXED IPC
-# socket /tmp/<AppName>/ipc, not via these env vars.) Waits for the X server
-# first; fails loud if it never appears.
+# dir. (On 1.4.7 the IPC socket is uid-scoped: this server owns
+# /tmp/<App>-1000/ipc, and setup.sh's root `rustdesk --password` finds it by
+# scanning /proc for THIS --server.) Waits for the X server first; fails loud if
+# it never appears.
 set -euo pipefail
 export DISPLAY=:99
 export HOME=/home/user

@@ -73,7 +73,7 @@ if [ "$PURGE" -eq 1 ]; then
   fi
   log "Purge complete. ./home is empty. Re-create with: ./setup.sh <password>"
   log "(The built image was kept for a fast rebuild. To reclaim its disk space:"
-  log "   docker image rm haggai_computer:1.4.6 )"
+  log "   docker image rm haggai_computer:1.4.7 )"
 else
   log "Done. The container is gone; ./home and the image are intact."
   log "Re-deploy with: ./setup.sh <password>"

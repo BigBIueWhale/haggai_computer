@@ -17,7 +17,7 @@ set -euo pipefail
 
 # ---- constants (specific, not configurable) --------------------------------
 CONTAINER=haggai_computer
-IMAGE=haggai_computer:1.4.6
+IMAGE=haggai_computer:1.4.7
 SERVICE=haggai_computer
 HOST_PORT=21128
 MIN_PW_LEN=12
@@ -100,17 +100,20 @@ done
 log "Container is healthy."
 
 # ---- set the RustDesk permanent password -----------------------------------
-# How `rustdesk --password` works here (verified against the 1.4.6 source):
-#   * it must run as root (-u 0) and the binary must be "installed" (under /usr);
-#   * it reaches the running --server over a FIXED IPC socket /tmp/<AppName>/ipc
-#     (hbb_common config.rs `ipc_path`) — NOT a HOME/XDG-derived path, so we do
-#     NOT set those. The server (running as `user`) then persists the encrypted
-#     permanent password into /home/user/.config/rustdesk/RustDesk.toml AS `user`.
-#   * we leave HOME at root's default (/root) so the client's own harmless local
-#     config write (ipc.rs:1162) never lands in — or root-owns — the user's home.
-# DISPLAY is set in case the Flutter binary spins up the UI before handling the
-# flag. The password is passed via an inherited env var, expanded INSIDE the
-# container (single-quoted bash -c), so it never appears in the host process list.
+# How `rustdesk --password` works here (verified against the 1.4.7 source):
+#   * run as root (-u 0) with the binary "installed" (under /usr) so core_main
+#     enables the UserMainIpcScope guard for this management command;
+#   * 1.4.7 IPC sockets are uid-scoped (/tmp/<App>-<uid>/ipc). Root does NOT use a
+#     fixed path: it scans /proc for the running `--server`, takes its uid (1000),
+#     and connects to /tmp/<App>-1000/ipc — reaching it via DAC_OVERRIDE (a default
+#     Docker capability; one reason cap_drop:ALL is not used). HOME/XDG are
+#     irrelevant to this path, so we don't set them (root keeps its own /root).
+#   * the server (uid 1000) persists the encrypted password into
+#     /home/user/.config/rustdesk/RustDesk.toml AS `user`, then ACKs -> "Done!".
+# REQUIRES the --server already running and /proc-discoverable — the health wait
+# above guarantees that. DISPLAY is set in case the Flutter binary spins up the UI
+# before handling the flag. The password is passed via an inherited env var,
+# expanded INSIDE the container (single-quoted bash -c), so it never hits host argv.
 log "Setting the RustDesk permanent password (IPC to the running server)..."
 export RD_PASSWORD="$PASSWORD"
 rd_ok=0

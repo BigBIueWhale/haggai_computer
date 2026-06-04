@@ -146,7 +146,7 @@ This container never touches the RTX 5090: no `--gpus`, no NVIDIA runtime, softw
 
 ## Reproducibility boundary
 
-- **Pinned** (security-relevant / where upstream pins): RustDesk `1.4.6` (SHA-256
+- **Pinned** (security-relevant / where upstream pins): RustDesk `1.4.7` (SHA-256
   verified, fail-closed), base `ubuntu:24.04`, Node major `22`, Ghidra (SHA),
   radare2/ttyd commits, libwebsockets tag, `7zip`/`binwalk` versions.
 - **Tracking-upstream** (the large apt/pip/npm dev sets, Codex, gh): current-stable

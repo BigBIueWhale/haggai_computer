@@ -13,7 +13,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: haggai_computer:1.4.6
+    image: haggai_computer:1.4.7
     container_name: haggai_computer
     hostname: haggai-computer
 
@@ -54,8 +54,18 @@ services:
     # elevation; cap_drop:ALL strips the CHOWN/SETUID/DAC_OVERRIDE/NET_RAW that
     # apt/dpkg/sudo and Haggai's own net tools — nmap, tcpdump, ping — need). The
     # default Docker capability set + the structural limits above are the
-    # isolation boundary. See docs/SECURITY.md for the full rationale and the
-    # optional userns-remap hardening.
+    # isolation boundary. See docs/SECURITY.md for the full rationale.
+    #
+    # ONE capability is added: SYS_PTRACE. RustDesk 1.4.7's root `rustdesk
+    # --password` finds the user `--server` by reading its /proc/<pid>/exe, which
+    # Docker's default caps forbid across uids; without it, password provisioning
+    # fails ("No --server process found"). SYS_PTRACE only lets root introspect
+    # other processes INSIDE this container; it is NOT a breakout primitive like
+    # SYS_ADMIN — which we evaluated (for a full systemd/logind container) and
+    # REJECTED, since SYS_ADMIN + apparmor=unconfined would gut the posture on this
+    # DMZ box. See docs/SECURITY.md §4.
+    cap_add:
+      - SYS_PTRACE
     init: true                  # reap zombies (tini as PID 1)
 
     # --- Health --------------------------------------------------------------

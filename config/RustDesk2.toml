@@ -1,6 +1,6 @@
 # RustDesk options for the haggai_computer container.
 # These [options] are copied verbatim from a proven, working RustDesk
-# configuration — i.e. they are known-good on this exact RustDesk 1.4.6.
+# configuration — i.e. they are known-good on this exact RustDesk 1.4.7.
 # Seeded into ~/.config/rustdesk/RustDesk2.toml by the entrypoint on first run
 # (only if absent). The permanent password itself lives in RustDesk.toml and is
 # set by ./setup.sh, NOT here — no secret is ever stored in this repo.

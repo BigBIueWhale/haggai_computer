@@ -51,7 +51,7 @@ are not applied automatically.
 
 ## 1a. RustDesk and UDP — why nothing random reaches your external interface
 
-Verified against the RustDesk 1.4.6 source: the "random ephemeral UDP port" that
+Verified against the RustDesk 1.4.7 source: the "random ephemeral UDP port" that
 makes a default-deny UDP firewall impossible for the host's own RustDesk is a
 NAT-traversal / rendezvous artifact, and it is **always an outbound socket — there
 is no inbound random-UDP listener anywhere in the code**.
@@ -108,20 +108,35 @@ this repo; it is applied at deploy time and asserted (RustDesk: `--password` →
 ## 4. Capabilities & seccomp
 
 Haggai must be able to run `sudo apt install`, so the container runs with
-**Docker's default capability set** and **default seccomp + AppArmor profiles kept
-ON**. Two hardening knobs are deliberately NOT used, because each would break that:
+**Docker's default capability set + `SYS_PTRACE`**, and **default seccomp + AppArmor
+profiles kept ON**. Two hardening knobs are deliberately NOT used, because each
+would break `sudo`/`apt`:
 
 - **`no-new-privileges` is off** — it blocks `sudo` from elevating at all.
 - **`cap_drop: ALL` is not used** — it would strip `CHOWN`/`SETUID`/`SETGID`/
   `DAC_OVERRIDE` (so `apt`, `dpkg`, `sudo` fail) and `NET_RAW` (so Haggai's own
   `nmap`/`tcpdump`/`ping` fail).
 
-We **never** use `seccomp=unconfined` or add
-`SYS_ADMIN` (the Codex-in-Docker guides suggest that to make Codex's *nested*
-sandbox work — we refuse it; instead Codex runs sandbox-less and relies on the
-container, see §6). The isolation boundary is the container itself plus the
-structural limits in §3 — the standard, well-understood Docker posture — not
-shaved individual capabilities.
+**Why `SYS_PTRACE` is added — and only that.** RustDesk 1.4.7 sets the unattended
+password with a *root* CLI command (`rustdesk --password`) that finds the
+user-owned `--server` by reading its `/proc/<pid>/exe`; reading another uid's
+`/proc/<pid>/exe` needs `CAP_SYS_PTRACE`, which Docker drops by default — so without
+it, provisioning fails ("No --server process found"). `SYS_PTRACE` only lets root
+introspect *other processes inside this container*; it is **not** a breakout
+primitive.
+
+**What we evaluated and REJECTED.** We never use `seccomp=unconfined` or add
+`SYS_ADMIN`. Making this a "real" systemd/logind Ubuntu (so `systemctl` works) would
+require booting systemd as PID 1, which on this host needs `SYS_ADMIN` (a documented
+breakout primitive) **plus** `apparmor=unconfined` **plus** `cgroupns=host` — and
+even then a logind session only forms via an off-label console-getty trick. On a
+DMZ-exposed box that posture downgrade is unacceptable, so we keep the lightweight
+(supervisor + Xvfb) container and accept that it is a remote **dev desktop**, not a
+full systemd OS (no `systemctl`/seat). **If a genuine logind/`systemctl` machine is
+ever needed, the posture-consistent answer is a real VM (KVM) — a separate kernel is
+*stronger* isolation than any container.** (We also refuse `SYS_ADMIN` /
+`seccomp=unconfined` for Codex's nested sandbox; it runs sandbox-less and relies on
+the container — see §6.)
 
 **Trust note:** because Haggai is effectively root *inside* his container (via
 `sudo`), treat this as "Haggai has root on a well-isolated VM." The blast radius of

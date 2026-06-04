@@ -317,9 +317,16 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
 # OpenAI Codex (installed near the end) requires Node >= 22, and every global npm
 # tool below runs happily on 22 LTS, so we standardize on NodeSource 22.x. The
 # NodeSource setup script runs its own apt-get update; `nodejs` here bundles npm.
+#
+# Pin npm's global prefix to /usr/local — where Ubuntu's apt npm puts globals
+# (upstream's working behavior). NodeSource's npm otherwise defaults the prefix to
+# /usr, and symlinking package bins into the crowded /usr/bin collides with
+# apt-provided binaries (e.g. /usr/bin/markdown-it), which modern npm refuses to
+# overwrite. /usr/local/bin is clean, on PATH, and survives the /home/user mount.
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/* \
+    && npm config set prefix /usr/local \
     && node --version && npm --version
 
 # Bun JavaScript/TypeScript runtime (installed system-wide into /usr/local)
@@ -1053,13 +1060,16 @@ RUN apt-get update && apt-get install -y \
     pulseaudio \
     && rm -rf /var/lib/apt/lists/*
 
-# RustDesk client, pinned to 1.4.6 and SHA-256-verified — the SAME artifact and
-# pin as personal_server/scripts/11_install_rustdesk.sh (copied here so this
-# project is self-contained). `apt install ./<deb>` resolves Noble's t64
+# RustDesk client, pinned to 1.4.7 and SHA-256-verified. 1.4.7 (newer than the
+# host's personal_server 1.4.6 pin) is chosen deliberately for its headless-Linux
+# OS-password anti-brute-force hardening (#14985, #14682), the password-encryption
+# refactor (#15073) and symmetric-crypt zero-nonce fix (#15144), and the
+# file-transfer path-traversal fix (#14678) — all directly relevant to an
+# internet-exposed Direct-IP listener. `apt install ./<deb>` resolves Noble's t64
 # transitional aliases (libgtk-3-0 -> libgtk-3-0t64, ...); raw `dpkg -i` would
 # fail on unmet deps. The build aborts on any SHA / package-metadata mismatch.
-ARG RUSTDESK_VERSION=1.4.6
-ARG RUSTDESK_DEB_SHA256=0da46d7a7b252282ded5323f74319a10c1fa7271001d3b297b3def415c8c8f04
+ARG RUSTDESK_VERSION=1.4.7
+ARG RUSTDESK_DEB_SHA256=12f61bb5ceb10a708089903357bd1f98dcb618bd0ea56ec568aaf1713a38070a
 RUN curl -fsSL -o /tmp/rustdesk.deb \
         "https://github.com/rustdesk/rustdesk/releases/download/${RUSTDESK_VERSION}/rustdesk-${RUSTDESK_VERSION}-x86_64.deb" \
     && echo "${RUSTDESK_DEB_SHA256}  /tmp/rustdesk.deb" | sha256sum --check --status \
@@ -1068,6 +1078,14 @@ RUN curl -fsSL -o /tmp/rustdesk.deb \
     && apt-get update && apt-get install -y /tmp/rustdesk.deb \
     && rm -rf /var/lib/apt/lists/* /tmp/rustdesk.deb \
     && test -x /usr/share/rustdesk/rustdesk
+
+# Force RustDesk's Linux display-server detection to X11. In this container
+# `loginctl` may exist with no login1 session, so RustDesk's get_display_server()
+# would fall back to $XDG_SESSION_TYPE; a stray non-x11 value makes `--server`
+# REFUSE incoming sessions ("Unsupported display server type") and mis-select the
+# capture/input backend. Forcing x11 makes it deterministic. (Verified against the
+# 1.4.7 source: hbb_common platform/linux.rs honors this env var first.)
+ENV RUSTDESK_FORCED_DISPLAY_SERVER=x11
 
 # ============================================================
 # USER SETUP
