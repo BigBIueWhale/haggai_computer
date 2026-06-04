@@ -37,8 +37,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RD_TOML="$SCRIPT_DIR/home/.config/rustdesk/RustDesk.toml"  # bind-mounted; host-readable (uid 1000)
 LINUX_MARK="$SCRIPT_DIR/home/.haggai_linux_pw_ok"          # transient success marker (host-polled)
 LINUX_LOG="$SCRIPT_DIR/home/.haggai_linux_pw.log"          # transient diagnostics (never the password)
-GPU_MARK="$SCRIPT_DIR/home/.haggai_gpu_ok"                 # transient: --gpu verification marker
-HOSTDOCKER_MARK="$SCRIPT_DIR/home/.haggai_hostdocker_ok"   # transient: --host-docker verification marker
+GPU_MARK="$SCRIPT_DIR/home/.haggai_gpu_ok"                 # transient: --dev GPU verification marker
+HOSTDOCKER_MARK="$SCRIPT_DIR/home/.haggai_hostdocker_ok"   # transient: --dev host-Docker verification marker
 
 log()  { printf '\033[1;32m[setup]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[setup]\033[0m %s\n' "$*" >&2; }
@@ -65,16 +65,21 @@ Usage: ./setup.sh [options] <password>
                     login inside the container. >= ${MIN_PW_LEN} characters; no
                     control characters (newline/tab/etc.).
 
-Options (all OPTIONAL and OFF by default — Haggai's deployment uses NONE of them):
-  --gpu             Give the container the host NVIDIA GPU for CUDA / compute (via
-                    the nvidia-container-toolkit). Graphics stay on the CPU, so no
-                    VRAM is spent on the desktop. Requires the NVIDIA driver + the
-                    container toolkit already installed on THIS host.
-  --host-docker     Give the container control of the HOST's Docker: bakes the Docker
-                    CLI into the image and bind-mounts /var/run/docker.sock so the dev
-                    environment inside can build/run containers on the host.
-                    WARNING: this is ROOT-EQUIVALENT on the host — use only on a
-                    single-user box you fully trust, NEVER for a DMZ desktop.
+Options (OPTIONAL and OFF by default — Haggai's deployment uses NONE of this):
+  --dev             Turn this locked-down streaming desktop into a host-coupled DEV
+                    workstation. ONE switch, both halves, no sub-options:
+                      * host NVIDIA GPU for CUDA / compute (nvidia-container-toolkit).
+                        Graphics stay on the CPU, so 0 VRAM is spent on the desktop.
+                      * the HOST's Docker: bakes in the Docker CLI + the docker-guard
+                        wrapper and bind-mounts /var/run/docker.sock, so 'docker'
+                        inside drives the host daemon (NOT Docker-in-Docker). The
+                        wrapper refuses the patterns that would publish a service to
+                        the public internet on this DMZ box, and prints the working
+                        one ('docker haggai-help' inside shows it).
+                    WARNING: the docker socket is ROOT-EQUIVALENT on the host. Use
+                    --dev ONLY on a single-user box you fully trust; NEVER for Haggai's
+                    DMZ desktop. Requires the NVIDIA driver + nvidia-container-toolkit
+                    already installed on THIS host.
   -h, --help        Show this help and exit.
 
 Builds the image, starts the container, and provisions the password. Refuses to run
@@ -94,17 +99,15 @@ assert_container_running() {
 }
 
 # ---- argument parsing (flags in any order; exactly one positional: the password) --
-GPU=0
-HOST_DOCKER=0
+DEV=0
 POSITIONAL=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -h|--help)     print_help; exit 0 ;;
-    --gpu)         GPU=1; shift ;;
-    --host-docker) HOST_DOCKER=1; shift ;;
-    --)            shift; while [ "$#" -gt 0 ]; do POSITIONAL+=("$1"); shift; done ;;
-    -*)            die "unknown option: $1  (run ./setup.sh --help)" ;;
-    *)             POSITIONAL+=("$1"); shift ;;
+    -h|--help) print_help; exit 0 ;;
+    --dev)     DEV=1; shift ;;
+    --)        shift; while [ "$#" -gt 0 ]; do POSITIONAL+=("$1"); shift; done ;;
+    -*)        die "unknown option: $1  (run ./setup.sh --help)" ;;
+    *)         POSITIONAL+=("$1"); shift ;;
   esac
 done
 [ "${#POSITIONAL[@]}" -eq 1 ] || usage
@@ -128,30 +131,30 @@ docker compose version >/dev/null 2>&1 \
 
 cd "$SCRIPT_DIR"
 
-# ---- optional modes: assemble COMPOSE_FILE + check each flag's preconditions ------
-# Default (no flags) => COMPOSE_FILE is exactly docker-compose.yml, identical to
-# before. Each flag appends its override file (compose merges them) and is gated by a
-# fail-loud precondition check, in the spirit of the personal_server install scripts.
+# ---- optional dev mode: assemble COMPOSE_FILE + check ALL preconditions ----------
+# Default (no --dev) => COMPOSE_FILE is exactly docker-compose.yml, identical to
+# before. --dev appends the single override (compose merges them) and is gated by
+# fail-loud precondition checks for BOTH halves — host GPU and host Docker — in the
+# spirit of the personal_server install scripts (refuse on a missing prerequisite,
+# never silently degrade).
 COMPOSE_FILES="docker-compose.yml"
-if [ "$GPU" -eq 1 ]; then
-  [ -f docker-compose.gpu.yml ] || die "--gpu: docker-compose.gpu.yml is missing"
+if [ "$DEV" -eq 1 ]; then
+  [ -f docker-compose.dev.yml ] || die "--dev: docker-compose.dev.yml is missing"
+  # half 1 — host GPU prerequisites
   command -v nvidia-smi >/dev/null 2>&1 \
-    || die "--gpu: 'nvidia-smi' not found — install the NVIDIA driver on this host first"
+    || die "--dev: 'nvidia-smi' not found — install the NVIDIA driver on this host first"
   nvidia-smi -L >/dev/null 2>&1 \
-    || die "--gpu: 'nvidia-smi -L' failed — the NVIDIA driver is not working"
+    || die "--dev: 'nvidia-smi -L' failed — the NVIDIA driver is not working"
   docker info 2>/dev/null | grep -qiE 'Runtimes:.*nvidia|nvidia\.com/gpu' \
-    || die "--gpu: Docker has no NVIDIA runtime/CDI — install nvidia-container-toolkit and run 'sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker'"
-  COMPOSE_FILES="$COMPOSE_FILES:docker-compose.gpu.yml"
-  log "Mode: --gpu (host NVIDIA GPU for compute; graphics stay on the CPU)."
-fi
-if [ "$HOST_DOCKER" -eq 1 ]; then
-  [ -f docker-compose.host-docker.yml ] || die "--host-docker: docker-compose.host-docker.yml is missing"
+    || die "--dev: Docker has no NVIDIA runtime/CDI — install nvidia-container-toolkit and run 'sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker'"
+  # half 2 — host Docker socket
   [ -S /var/run/docker.sock ] \
-    || die "--host-docker: /var/run/docker.sock not found — is the host Docker daemon running?"
-  COMPOSE_FILES="$COMPOSE_FILES:docker-compose.host-docker.yml"
-  warn "Mode: --host-docker — the container will get ROOT-EQUIVALENT control of THIS"
-  warn "      host's Docker (bind-mounting /var/run/docker.sock). Only do this on a box"
-  warn "      you fully trust; never for a DMZ desktop."
+    || die "--dev: /var/run/docker.sock not found — is the host Docker daemon running?"
+  COMPOSE_FILES="$COMPOSE_FILES:docker-compose.dev.yml"
+  warn "Mode: --dev — host-coupled dev workstation. The container will get the host GPU"
+  warn "      (compute only; graphics stay on the CPU) AND ROOT-EQUIVALENT control of this"
+  warn "      host's Docker (bind-mounting /var/run/docker.sock). Only ever do this on a box"
+  warn "      you fully trust; NEVER for a DMZ desktop like Haggai's."
 fi
 export COMPOSE_FILE="$COMPOSE_FILES"
 
@@ -204,7 +207,7 @@ log "Container is healthy."
 # ---- verify the optional modes actually took effect (detached exec -> host marker) ---
 # Same no-foreground-exec rule as the passwords: a detached exec writes a marker into
 # the bind-mounted home, then we poll it from the host.
-if [ "$GPU" -eq 1 ]; then
+if [ "$DEV" -eq 1 ]; then
   log "Verifying GPU passthrough (nvidia-smi inside the container)..."
   rm -f "$GPU_MARK"
   # Detached EXISTENCE-marker: the in-container pipe decides and we only `touch` the
@@ -217,10 +220,10 @@ if [ "$GPU" -eq 1 ]; then
   while [ "$SECONDS" -lt "$gdl" ]; do [ -f "$GPU_MARK" ] && { gpu_ok=1; break; }; sleep 1; done
   rm -f "$GPU_MARK"
   [ "$gpu_ok" -eq 1 ] \
-    || die "--gpu: nvidia-smi could not see a GPU inside the container. Check the host's nvidia-container-toolkit, then ./teardown.sh and retry."
+    || die "--dev (GPU): nvidia-smi could not see a GPU inside the container. Check the host's nvidia-container-toolkit, then ./teardown.sh and retry."
   log "  GPU verified — nvidia-smi sees the host GPU inside (CUDA/compute available)."
 fi
-if [ "$HOST_DOCKER" -eq 1 ]; then
+if [ "$DEV" -eq 1 ]; then
   log "Verifying host-Docker access (daemon reachable + 'user' in the socket group)..."
   rm -f "$HOSTDOCKER_MARK"
   # Same existence-marker pattern: only touch the marker if BOTH the host daemon is
@@ -234,7 +237,7 @@ if [ "$HOST_DOCKER" -eq 1 ]; then
   while [ "$SECONDS" -lt "$hdl" ]; do [ -f "$HOSTDOCKER_MARK" ] && { hd_ok=1; break; }; sleep 1; done
   rm -f "$HOSTDOCKER_MARK"
   [ "$hd_ok" -eq 1 ] \
-    || die "--host-docker: the container could not reach the host Docker daemon, or 'user' lacks socket access. Run ./teardown.sh and retry."
+    || die "--dev (host Docker): the container could not reach the host Docker daemon, or 'user' lacks socket access. Run ./teardown.sh and retry."
   log "  host Docker reachable from the container, and 'user' can use it without sudo."
 fi
 
@@ -378,10 +381,15 @@ cat <<EOF
 ============================================================================
 EOF
 
-# Optional-mode notes (printed only when the corresponding flag was given).
-if [ "$GPU" -eq 1 ] || [ "$HOST_DOCKER" -eq 1 ]; then
-  echo "  Enabled optional modes:"
-  [ "$GPU" -eq 1 ]         && echo "     * --gpu:         host NVIDIA GPU is available inside for CUDA/compute (graphics on CPU)."
-  [ "$HOST_DOCKER" -eq 1 ] && echo "     * --host-docker: 'docker ...' inside the desktop drives the HOST's Docker (root-equivalent)."
-  echo "============================================================================"
+# Dev-mode notes (printed only when --dev was given).
+if [ "$DEV" -eq 1 ]; then
+  cat <<EOF
+  Dev mode (--dev) is ON:
+     * host NVIDIA GPU available inside for CUDA/compute (graphics stay on the CPU, 0 VRAM).
+     * 'docker' inside the desktop drives the HOST's Docker (root-equivalent; NOT DinD). It
+       is the docker-guard wrapper: it REFUSES publishing a service to the internet on this
+       DMZ box and shows the pattern that works. Run 'docker haggai-help' inside for the
+       networking model + a private vLLM recipe (use --network container:${CONTAINER}, not -p).
+============================================================================
+EOF
 fi

@@ -1160,18 +1160,27 @@ RUN set -e; \
     grep -q -- '--no-sandbox' /usr/share/applications/code.desktop
 
 # ============================================================
-# OPTIONAL: host Docker CLI (build arg WITH_HOST_DOCKER, default 0 = OFF)
+# OPTIONAL: dev mode — host Docker CLI + the docker-guard wrapper
+# (build arg WITH_DEV, default 0 = OFF)
 # ============================================================
-# Baked in ONLY when built with --build-arg WITH_HOST_DOCKER=1, which
-# `./setup.sh --host-docker` does via docker-compose.host-docker.yml. It installs the
-# Docker *client* only (no daemon, no containerd) so that — with the host's
-# /var/run/docker.sock bind-mounted in — the in-container dev environment can drive
-# the HOST's Docker (build/run/compose, including GPU/CUDA containers). Default 0
-# leaves Haggai's image with no Docker client at all (byte-identical behaviour to
-# before). SECURITY: the host socket is root-equivalent; see docs/SECURITY.md and
-# docker-compose.host-docker.yml.
-ARG WITH_HOST_DOCKER=0
-RUN if [ "$WITH_HOST_DOCKER" = "1" ]; then \
+# Baked in ONLY when built with --build-arg WITH_DEV=1, which `./setup.sh --dev`
+# does via docker-compose.dev.yml. It installs the Docker *client* only (no daemon,
+# no containerd) so that — with the host's /var/run/docker.sock bind-mounted in — the
+# in-container dev environment drives the HOST's Docker (build/run/compose, incl.
+# GPU/CUDA containers). It then installs dev/docker-guard as /usr/local/bin/docker so
+# it SHADOWS the real CLI (/usr/bin/docker) on PATH and owns the leaky abstraction
+# that `docker` here controls the HOST daemon — refusing the patterns that would
+# publish a service to the public internet on this DMZ box (see dev/docker-guard and
+# docs/SECURITY.md). Default 0 leaves Haggai's image with NO Docker client and NO
+# wrapper at all. SECURITY: the host socket is root-equivalent; see docs/SECURITY.md
+# and docker-compose.dev.yml.
+#
+# The guard is COPYed to a staging path first (a COPY itself can't be build-arg-
+# conditional); the RUN then either installs it (dev) or removes it (default), so the
+# default image is left clean.
+COPY dev/docker-guard /usr/local/lib/haggai/docker-guard
+ARG WITH_DEV=0
+RUN if [ "$WITH_DEV" = "1" ]; then \
       set -eux; \
       install -m 0755 -d /etc/apt/keyrings; \
       curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
@@ -1182,8 +1191,14 @@ RUN if [ "$WITH_HOST_DOCKER" = "1" ]; then \
       apt-get install -y docker-ce-cli docker-buildx-plugin docker-compose-plugin; \
       rm -rf /var/lib/apt/lists/*; \
       test -x /usr/bin/docker; \
+      chmod 0755 /usr/local/lib/haggai/docker-guard; \
+      ln -sf /usr/local/lib/haggai/docker-guard /usr/local/bin/docker; \
+      bash -n /usr/local/lib/haggai/docker-guard; \
+      [ "$(command -v docker)" = /usr/local/bin/docker ] || { echo 'ERROR: docker-guard does not shadow /usr/bin/docker on PATH'; exit 1; }; \
     else \
-      echo "WITH_HOST_DOCKER=0 (default) — Docker CLI not installed"; \
+      rm -f /usr/local/lib/haggai/docker-guard; \
+      rmdir /usr/local/lib/haggai 2>/dev/null || true; \
+      echo "WITH_DEV=0 (default) — no Docker CLI, no docker-guard"; \
     fi
 
 # ============================================================

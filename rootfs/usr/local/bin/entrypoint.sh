@@ -33,12 +33,12 @@ install -d -m 0700 -o "$USER_UID" -g "$USER_GID" "$RUNTIME_DIR"
 #     writable layer, so this is re-asserted, idempotently, on every (re)start.)
 install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix
 
-# 1c) Optional host-Docker mode: when the host's Docker socket is bind-mounted in (the
-#     `./setup.sh --host-docker` deployment), grant `user` access to it by matching
-#     its group — create a group with the socket's gid if the image has none, then add
-#     `user`. supervisord's setuid/initgroups gives the desktop session that group, so
-#     `docker` works without sudo inside. Entirely SKIPPED when the socket isn't
-#     mounted, i.e. Haggai's default deployment — so his image/runtime is unchanged.
+# 1c) Optional dev mode: when the host's Docker socket is bind-mounted in (the
+#     `./setup.sh --dev` deployment), grant `user` access to it by matching its group —
+#     create a group with the socket's gid if the image has none, then add `user`.
+#     supervisord's setuid/initgroups gives the desktop session that group, so `docker`
+#     (the docker-guard wrapper) works without sudo inside. Entirely SKIPPED when the
+#     socket isn't mounted, i.e. Haggai's default deployment — image/runtime unchanged.
 if [ -S /var/run/docker.sock ]; then
   sock_gid="$(stat -c %g /var/run/docker.sock)"
   getent group "$sock_gid" >/dev/null 2>&1 || groupadd -g "$sock_gid" hostdocker

@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+# =============================================================================
+# docker-guard — the `docker` command INSIDE the haggai_computer dev desktop.
+#
+# Installed as /usr/local/bin/docker (shadowing the real CLI at /usr/bin/docker
+# on PATH) ONLY when the desktop is built/run in dev mode — `./setup.sh --dev
+# <password>`, which bind-mounts the host's /var/run/docker.sock and bakes in the
+# Docker CLI. In Haggai's default deployment this file is removed at build time and
+# there is no `docker` command at all.
+#
+# WHY THIS EXISTS — the leaky abstraction it owns:
+#   `docker` in this desktop drives the HOST's Docker daemon, not a local one. A
+#   container you start is therefore a SIBLING on the host, in its OWN network
+#   namespace — NOT nested inside this desktop. Two consequences trip up anyone
+#   (human or AI agent) who assumes this is a normal Linux box:
+#     1. `docker run -p 8000:80 …` publishes on the HOST's 0.0.0.0:8000. This host
+#        is a DMZ box with no firewall, so that port faces the PUBLIC INTERNET.
+#        And it STILL won't help you: `curl localhost:8000` from this desktop can't
+#        reach a sibling in a different netns.
+#     2. The way that DOES work — reachable on your localhost, nothing published —
+#        is to put the new container in THIS desktop's network namespace:
+#            docker run --network container:<this-desktop> …      (and NO -p)
+#
+# So this wrapper inspects `docker run`/`create`, REFUSES the patterns that would
+# silently expose a port to the internet (and not even work), WARNS about the ones
+# that only make sense on a real host, always prints the full story plus a pattern
+# that actually works, and otherwise passes straight through. `docker haggai-help`
+# prints the whole explanation and a copy-paste vLLM recipe.
+#
+# Deliberately NO `set -e`/`set -u`: a wrapper must fail OPEN. If anything here
+# hiccups, control still falls through to `exec "$REAL"` so a legitimate command is
+# never blocked by a bug in the guard.
+# =============================================================================
+
+REAL=/usr/bin/docker
+if [ ! -x "$REAL" ]; then
+  printf 'docker-guard: the real Docker CLI is not at %s\n' "$REAL" >&2
+  exit 127
+fi
+
+if [ -t 2 ]; then
+  c_red=$'\033[1;31m'; c_yel=$'\033[1;33m'; c_grn=$'\033[1;32m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
+else
+  c_red=''; c_yel=''; c_grn=''; c_dim=''; c_off=''
+fi
+
+# --- resolve THIS container's id/name on the host daemon ---------------------
+# We drive the HOST's Docker, so "self" is a real container over there. Docker
+# bind-mounts /etc/hostname|hosts|resolv.conf from <data-root>/containers/<id>/…,
+# and that host path appears in /proc/self/mountinfo — so we recover our own 64-hex
+# id with no privileges, then resolve a friendly name via the daemon. (Note: the
+# container's *hostname* is NOT its name here — compose sets hostname=haggai-computer
+# but container_name=haggai_computer — so we must not use `hostname`.)
+SELF_ID="$(grep -oE 'containers/[0-9a-f]{64}' /proc/self/mountinfo 2>/dev/null | head -n1 | cut -d/ -f2)"
+SELF_NAME=""
+if [ -n "$SELF_ID" ]; then
+  SELF_NAME="$("$REAL" inspect -f '{{.Name}}' "$SELF_ID" 2>/dev/null | sed 's#^/##')"
+fi
+SELF="${SELF_NAME:-$SELF_ID}"
+SELF_REF="${SELF:-<this-desktop-container>}"
+
+# true iff $1 (the value after --network/--net) targets THIS container
+is_self_net() {
+  local v="${1:-}" tgt rid
+  case "$v" in
+    container:*) tgt="${v#container:}" ;;
+    *) return 1 ;;
+  esac
+  if [ -n "$SELF_NAME" ] && [ "$tgt" = "$SELF_NAME" ]; then return 0; fi
+  if [ -n "$SELF_ID" ]; then
+    [ "$tgt" = "$SELF_ID" ] && return 0
+    [ "$tgt" = "${SELF_ID:0:12}" ] && return 0
+    rid="$("$REAL" inspect -f '{{.Id}}' "$tgt" 2>/dev/null)"
+    [ -n "$rid" ] && [ "$rid" = "$SELF_ID" ] && return 0
+  fi
+  return 1
+}
+
+# the full story (information-dense), reused by refusals and by `docker haggai-help`
+print_model() {
+  cat >&2 <<EOF
+${c_dim}Why this is not a normal Ubuntu box:${c_off}
+  • \`docker\` here drives the HOST's Docker daemon. A container you start is a
+    SIBLING on the host, in its own network namespace — not nested in this desktop.
+  • Publishing a port (\`-p\`, \`-P\`, or \`--network host\`) binds it on the HOST's
+    0.0.0.0. This box is DMZ'd with no firewall ⇒ that port faces the PUBLIC
+    INTERNET. And it still won't reach you: \`curl localhost:<port>\` from this
+    desktop can't see a sibling in another netns.
+
+${c_grn}What works — reachable on YOUR localhost, nothing exposed:${c_off}
+  docker run -d --network container:${SELF_REF} <image>        ${c_dim}# and NO -p${c_off}
+  # then, from this desktop, exactly like a real machine:
+  curl http://localhost:<port>
+  ${c_dim}# e.g. vLLM on the GPU, private to this desktop:${c_off}
+  docker run -d --gpus all --network container:${SELF_REF} \\
+             -e HF_TOKEN=… vllm/vllm-openai:latest --model <hf-model>
+  curl http://localhost:8000/v1/models
+
+${c_grn}Several containers that talk to each other (reach them by name):${c_off}
+  docker network create dev
+  docker network connect dev ${SELF_REF}        ${c_dim}# put THIS desktop on it${c_off}
+  docker run -d --network dev --name vllm --gpus all vllm/vllm-openai:latest …
+  curl http://vllm:8000/v1/models                ${c_dim}# from this desktop${c_off}
+
+${c_dim}Everything stays on the host daemon (so --gpus works) but OFF the public
+internet. If you really do want to publish on the host, use the raw CLI:
+${REAL}${c_off}
+EOF
+}
+
+ARGS=("$@")
+N="${#ARGS[@]}"
+
+# locate the subcommand, skipping docker's global options (some take a value)
+sub=""; subidx=-1; i=0
+while [ "$i" -lt "$N" ]; do
+  a="${ARGS[$i]}"
+  case "$a" in
+    -H|--host|-l|--log-level|--config|--context|--tlscacert|--tls*cert|--tls*key)
+      i=$((i + 2)); continue ;;
+    -D|--debug|--tls|--tlsverify)
+      i=$((i + 1)); continue ;;
+    -*) i=$((i + 1)); continue ;;
+    *)  sub="$a"; subidx="$i"; break ;;
+  esac
+done
+
+case "$sub" in
+  haggai-help)
+    printf '%sdocker in the haggai_computer dev desktop — networking model%s\n\n' "$c_grn" "$c_off" >&2
+    print_model
+    exit 0
+    ;;
+
+  run|create)
+    pub=0; det=0; net=""; pub_form=""
+    k=$((subidx + 1))
+    while [ "$k" -lt "$N" ]; do
+      a="${ARGS[$k]}"
+      case "$a" in
+        --) break ;;
+        -p|--publish)                      pub=1; pub_form="$a"; k=$((k + 2)); continue ;;
+        -p=*|--publish=*)                  pub=1; pub_form="$a"; k=$((k + 1)); continue ;;
+        -p?*)                              pub=1; pub_form="$a"; k=$((k + 1)); continue ;;
+        -P|--publish-all|--publish-all=*)  pub=1; pub_form="$a"; k=$((k + 1)); continue ;;
+        --network|--net)                   net="${ARGS[$((k + 1))]}"; k=$((k + 2)); continue ;;
+        --network=*)                       net="${a#--network=}"; k=$((k + 1)); continue ;;
+        --net=*)                           net="${a#--net=}"; k=$((k + 1)); continue ;;
+        -d|--detach|--detach=*)            det=1; k=$((k + 1)); continue ;;
+        -[!-]*) case "$a" in *d*) det=1 ;; esac; k=$((k + 1)); continue ;;  # short cluster (warn-only)
+        *) k=$((k + 1)); continue ;;
+      esac
+    done
+
+    blessed=0; if is_self_net "$net"; then blessed=1; fi
+    hostnet=0; if [ "$net" = host ]; then hostnet=1; fi
+
+    # -p combined with the blessed netns is invalid AND pointless — ports are already local.
+    if [ "$pub" -eq 1 ] && [ "$blessed" -eq 1 ]; then
+      printf '%s[docker-guard] REFUSED:%s a publish flag (%s) with --network container:%s\n' \
+        "$c_red" "$c_off" "${pub_form:--p}" "$SELF_REF" >&2
+      printf '  A container sharing this desktop'\''s netns already exposes its ports on YOUR\n' >&2
+      printf '  localhost. Drop the publish flag and reach it at http://localhost:<port>.\n' >&2
+      exit 2
+    fi
+
+    # the dangerous patterns: publish to the host, or share the host's netns. Both put
+    # the port on the host's 0.0.0.0 (public internet on this DMZ box) and STILL don't
+    # reach this desktop's localhost.
+    if [ "$pub" -eq 1 ] || [ "$hostnet" -eq 1 ]; then
+      if [ "$hostnet" -eq 1 ]; then
+        printf '%s[docker-guard] REFUSED:%s --network host on a DMZ box.\n' "$c_red" "$c_off" >&2
+        printf '  This shares the HOST'\''s network namespace: every port the container listens on\n' >&2
+        printf '  is exposed on the host'\''s 0.0.0.0 (the public internet here), and it is STILL not\n' >&2
+        printf '  on this desktop'\''s localhost.\n\n' >&2
+      else
+        printf '%s[docker-guard] REFUSED:%s publishing a port (%s) on a DMZ box.\n\n' \
+          "$c_red" "$c_off" "${pub_form:--p}" >&2
+      fi
+      print_model
+      exit 2
+    fi
+
+    # the blessed pattern: confirm and run.
+    if [ "$blessed" -eq 1 ]; then
+      printf '%s[docker-guard]%s sharing %s'\''s network namespace → its ports appear on YOUR\n' \
+        "$c_grn" "$c_off" "$SELF_REF" >&2
+      printf '  localhost (http://localhost:<port>), nothing published to the host/internet.\n' >&2
+      exec "$REAL" "$@"
+    fi
+
+    # a detached service that shares no network with the desktop: only makes sense on a
+    # real host. Not exposed, but you won't be able to reach it. Warn, then proceed.
+    if [ "$det" -eq 1 ]; then
+      printf '%s[docker-guard] heads-up:%s this container shares no network with your desktop.\n' \
+        "$c_yel" "$c_off" >&2
+      printf '  It is a SIBLING on the host (its own netns), so `curl localhost:<port>` from this\n' >&2
+      printf '  desktop will NOT reach it. To reach it on localhost (and keep it off the\n' >&2
+      printf '  host/internet), add:  %s--network container:%s%s\n' "$c_grn" "$SELF_REF" "$c_off" >&2
+      printf '  Or join both to a user network and use the container name (`docker haggai-help`).\n' >&2
+      printf '  Proceeding as requested.\n' >&2
+      exec "$REAL" "$@"
+    fi
+
+    exec "$REAL" "$@"
+    ;;
+
+  compose)
+    # "A bunch of dockers that talk to each other" is usually compose — so this is the
+    # case that matters most. For `up`/`create` we RESOLVE the effective config (which
+    # expands every override/extends/env-var) and REFUSE if any service publishes on the
+    # host's 0.0.0.0/:: (public internet here) or uses network_mode host — the compose
+    # equivalent of `docker run -p`. If we can't resolve it (no jq / config error) we
+    # fall back to an advisory and proceed (fail-open). Other verbs get an advisory only.
+    verb=""; vidx=-1; j=$((subidx + 1))
+    while [ "$j" -lt "$N" ]; do
+      case "${ARGS[$j]}" in
+        -f|--file|-p|--project-name|--env-file|--profile|--project-directory|--progress|--ansi|--parallel)
+          j=$((j + 2)); continue ;;     # compose-level flag that takes a value
+        -*) j=$((j + 1)); continue ;;   # boolean / --x=y compose-level flag
+        *)  verb="${ARGS[$j]}"; vidx="$j"; break ;;
+      esac
+    done
+
+    case "$verb" in
+      up|create)
+        preargs=( "${ARGS[@]:$((subidx + 1)):$((vidx - subidx - 1))}" )
+        cfg=""; offenders=""
+        if command -v jq >/dev/null 2>&1; then
+          cfg="$("$REAL" compose "${preargs[@]}" config --format json 2>/dev/null)"
+          if [ -n "$cfg" ]; then
+            offenders="$(printf '%s' "$cfg" | jq -r '
+              .services | to_entries[]
+              | .key as $n
+              | ((.value.network_mode? // "") == "host") as $hostnet
+              | ([ .value.ports[]?
+                   | select(((.host_ip // "0.0.0.0")) as $h
+                            | $h == "0.0.0.0" or $h == "::" or $h == "") ] | length > 0) as $pub
+              | select($hostnet or $pub) | $n' 2>/dev/null)"
+          fi
+        fi
+        if [ -n "$offenders" ]; then
+          printf '%s[docker-guard] REFUSED:%s this compose project publishes host ports on a DMZ box.\n' \
+            "$c_red" "$c_off" >&2
+          printf '  Service(s) binding the host'\''s 0.0.0.0/:: (= public internet here) or network_mode host:\n' >&2
+          printf '%s\n' "$offenders" | sed 's/^/      - /' >&2
+          printf '\n  For a service THIS desktop should reach (and the internet should not), give it:\n' >&2
+          printf '      %snetwork_mode: "container:%s"%s   and remove its `ports:`\n' "$c_grn" "$SELF_REF" "$c_off" >&2
+          printf '  then reach it at http://localhost:<port>. Services on the same compose network already\n' >&2
+          printf '  reach EACH OTHER by name and need no `ports:` for that. (Raw escape hatch: %s)\n' "$REAL" >&2
+          exit 2
+        fi
+        if [ -z "$cfg" ]; then   # could not resolve → advise, then proceed
+          printf '%s[docker-guard] note:%s could not resolve the compose config to check it for host\n' \
+            "$c_yel" "$c_off" >&2
+          printf '  publishing. Reminder: `ports:` bind the HOST (public internet on this DMZ box); use\n' >&2
+          printf '  network_mode: "container:%s" to reach a service on localhost. See `docker haggai-help`.\n' "$SELF_REF" >&2
+        fi
+        exec "$REAL" "$@"
+        ;;
+      run|start|restart)
+        printf '%s[docker-guard] note:%s compose services run on the HOST daemon, on a network this desktop\n' \
+          "$c_yel" "$c_off" >&2
+        printf '  is not on. To reach one from here give it network_mode: "container:%s" (and no host\n' "$SELF_REF" >&2
+        printf '  `ports:`); see `docker haggai-help`.\n' >&2
+        exec "$REAL" "$@"
+        ;;
+      *)
+        exec "$REAL" "$@"
+        ;;
+    esac
+    ;;
+
+  *)
+    exec "$REAL" "$@"
+    ;;
+esac

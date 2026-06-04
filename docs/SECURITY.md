@@ -200,24 +200,70 @@ free for your compute.
 
 ---
 
-## 7a. Optional dev flags (GPU, host Docker) — OFF by default
+## 7a. Optional dev mode (`--dev`) — host GPU + host Docker, OFF by default
 
-`./setup.sh` has two opt-in flags. Both are **OFF by default**: Haggai's deployment
-uses neither, and the default image/runtime is byte-identical to before.
+`./setup.sh --dev <password>` is the ONE opt-in switch that turns this locked-down
+streaming desktop into a host-coupled dev workstation. It is **OFF by default** —
+Haggai's deployment never uses it, and the default image has no GPU, no Docker client,
+and no wrapper. It bundles two things that always go together (no sub-options):
 
-- **`--gpu`** attaches the host NVIDIA GPU for **compute only**. Graphics never touch
-  it (software Xvfb + `LIBGL_ALWAYS_SOFTWARE=1`), so it spends **0 VRAM** on the
-  desktop. It adds **no new exposure** — it's a `--gpus` device reservation, not a
-  port. Requires the host's `nvidia-container-toolkit`.
-- **`--host-docker`** bind-mounts `/var/run/docker.sock` into the container and bakes
-  in the Docker CLI. **This is ROOT-EQUIVALENT on the host** — exactly as the
-  personal_server README §12 states: *"anyone who can write to /var/run/docker.sock
-  can mount the host root filesystem and become root."* It deliberately hands the
-  container the keys to the host, for a single-user dev box where the operator already
-  has that power. **NEVER enable it for Haggai's DMZ desktop** (or any box where the
-  desktop user is not the host's owner): combined with the internet-facing,
-  `--no-sandbox` browsers (§6a), a desktop compromise would become host root. setup.sh
-  prints a loud warning whenever the flag is used.
+- **Host NVIDIA GPU for compute.** Graphics never touch it (software Xvfb +
+  `LIBGL_ALWAYS_SOFTWARE=1`), so it spends **0 VRAM** on the desktop. It adds **no new
+  exposure** — a `--gpus` device reservation, not a port. Requires the host's
+  `nvidia-container-toolkit`. Honest caveat: the GPU joins the desktop's blast radius
+  (the driver doesn't zero VRAM on free), so only attach it on a box whose GPU/compute
+  you don't mind an (internet-facing) desktop being adjacent to.
+- **Host Docker.** Bind-mounts `/var/run/docker.sock` and bakes in the Docker CLI.
+  **This is ROOT-EQUIVALENT on the host** — exactly as the personal_server README §12
+  states: *"anyone who can write to /var/run/docker.sock can mount the host root
+  filesystem and become root."* It deliberately hands the container the keys to the
+  host, for a single-user dev box where the operator already has that power. It is NOT
+  Docker-in-Docker: no daemon runs inside; `docker` routes to the host. setup.sh prints
+  a loud warning whenever `--dev` is used.
+
+**NEVER enable `--dev` for Haggai's DMZ desktop** (or any box where the desktop user is
+not the host's owner): combined with the internet-facing, `--no-sandbox` browsers
+(§6a), a desktop compromise would become host root.
+
+### What changes on the host when `--dev` is on
+**Nothing is written or configured on the host.** The Docker CLI and the wrapper live
+in the *image*. At runtime `--dev` only **bind-mounts the already-existing**
+`/var/run/docker.sock` into the container — it writes no host file, changes no daemon
+config, alters no permission. The only host-side prerequisites are things already
+installed: Docker, and `nvidia-container-toolkit` (for the GPU). The Docker daemon
+listens on a **unix socket only** (no TCP `:2375`/`:2376`), so mounting that socket adds
+**no network listener** — the Docker API is never on the network, and "the whole
+internet reaching our Docker" cannot happen.
+
+### The leaky abstraction, and the `docker-guard` wrapper (`dev/docker-guard`)
+Because `docker` inside the desktop drives the **host** daemon, a container the user (or
+an AI agent) starts is a **sibling on the host, in its own network namespace** — not
+nested in the desktop. Two traps follow on this no-firewall DMZ box:
+1. `docker run -p 8000:80` (or `-P`, or `--network host`, or a compose `ports:`) binds
+   on the host's `0.0.0.0` → **public internet**. And it still won't work: `curl
+   localhost:8000` from the desktop can't reach a sibling in another netns.
+2. The pattern that *does* work — reachable on the desktop's localhost, nothing
+   published — is `docker run --network container:haggai_computer …` (no `-p`).
+
+In dev mode the in-guest `docker` is **not** the raw CLI but `dev/docker-guard`,
+installed as `/usr/local/bin/docker` so it shadows `/usr/bin/docker` on PATH (the build
+asserts this shadowing). It:
+- **refuses** `docker run`/`create` with `-p`/`-P`/`--network host`, and `docker
+  compose up`/`create` whose *resolved* config (it runs `docker compose config` and
+  inspects the JSON) publishes a host `0.0.0.0`/`::` port or uses `network_mode: host`;
+- **warns** on a detached `run` that shares no network with the desktop (unreachable here);
+- **passes everything else through**, and prints the working pattern plus a private
+  vLLM recipe (`docker haggai-help`).
+
+**Honest ceiling.** The wrapper is a *guard rail on PATH*, not an airtight boundary: the
+raw `/usr/bin/docker`, an exotic combined flag (`-dp8080:80`) it doesn't parse, or any
+tool that doesn't go through it can still publish to the host. The **airtight backstop
+is a host change you choose**: set `/etc/docker/daemon.json` → `{ "ip": "127.0.0.1" }`
+and restart Docker, so the daemon itself default-binds every published port to loopback
+instead of `0.0.0.0`. On a DMZ box that is the right default; it affects all of that
+host's containers, so it is the operator's call (this project does not apply it). The
+guard catches and teaches the common mistakes; the daemon default-bind closes the rest.
+Use both.
 
 ---
 

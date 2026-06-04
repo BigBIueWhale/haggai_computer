@@ -147,37 +147,58 @@ Each desktop lands on its own `0.0.0.0:<port>` — add a matching allow-list lin
 
 ---
 
-## Optional flags: GPU and host Docker (advanced, off by default)
+## Optional: dev mode (`--dev`) — host GPU + host Docker (advanced, off by default)
 
-Two opt-in flags to `./setup.sh`, both **OFF by default** — Haggai's Yeshiva
-deployment uses neither and the default image/runtime is unchanged (`./setup.sh
---help` lists everything). These are for when *you* run the desktop on your own GPU
-server, not a locked-down friend.
+One opt-in switch, **OFF by default** — Haggai's Yeshiva deployment never uses it and
+the default image is unchanged (`./setup.sh --help` lists everything). It's for when
+*you* run the desktop on your own trusted GPU box, not for a locked-down friend.
 
 ```bash
-./setup.sh --gpu '<password>'                  # CUDA/compute on the host GPU
-./setup.sh --host-docker '<password>'          # drive the host's Docker from inside
-./setup.sh --gpu --host-docker '<password>'    # both
+./setup.sh --dev '<password>'        # host GPU (compute) + the host's Docker, together
 ```
 
-- **`--gpu`** — gives the container the host NVIDIA GPU for **CUDA / compute** (LLMs,
-  PyTorch, …) via the nvidia-container-toolkit. **Graphics stay 100% on the CPU** (the
-  desktop is a software Xvfb framebuffer and OpenGL is forced to software), so **0 VRAM
-  is spent on the desktop** — all of it stays free for compute. That makes this the
-  right tool for a **no-iGPU** server, where a *native* desktop would be forced onto
-  the GPU and eat VRAM. Host prerequisites: the NVIDIA driver **and**
-  `nvidia-container-toolkit` (setup.sh checks both, fails loud if missing). Run LLMs
-  directly in the desktop — `ollama serve`, `llama.cpp`, CUDA PyTorch — no nested
-  Docker needed.
-- **`--host-docker`** — bakes the Docker **CLI** into the image and bind-mounts
-  `/var/run/docker.sock`, so the dev environment inside can `docker build/run/compose`
-  on the **host** (incl. GPU containers); `user` gets socket access without `sudo`.
-  **⚠ This is root-equivalent on the host** (socket write access = host root). Use it
-  **only** on a single-user box you fully trust — **never** for a DMZ desktop like
-  Haggai's.
+`--dev` bundles two things that go together for a real dev workstation (no sub-options):
 
-Each flag is verified after launch (GPU visible inside; host daemon reachable + `user`
-in the socket group) and fails loud if it didn't take. See `docs/SECURITY.md`.
+- **Host NVIDIA GPU for compute** (LLMs, PyTorch, vLLM, …) via the
+  nvidia-container-toolkit. **Graphics stay 100% on the CPU** (software Xvfb framebuffer,
+  OpenGL forced to software), so **0 VRAM is spent on the desktop** — all of it free for
+  compute. That makes this the right tool for a **no-iGPU** server, where a *native*
+  desktop would be forced onto the GPU and eat VRAM. Run LLMs directly in the desktop
+  (`ollama serve`, `llama.cpp`, CUDA PyTorch) — no nested Docker needed.
+- **The host's Docker** — bakes in the Docker **CLI** and bind-mounts
+  `/var/run/docker.sock`, so the dev environment inside can `docker build/run/compose`
+  on the **host** (incl. GPU containers); `user` gets socket access without `sudo`. It
+  is **not** Docker-in-Docker — no daemon runs inside; `docker` routes to the host.
+
+Host prerequisites (checked at launch, fail-loud if missing): the NVIDIA driver **and**
+`nvidia-container-toolkit`. After launch, setup.sh verifies the GPU is visible inside
+and the host daemon is reachable + `user` is in the socket group, failing loud if not.
+
+> **⚠ Root-equivalent.** Write access to `/var/run/docker.sock` = host root. Use `--dev`
+> **only** on a single-user box you fully trust — **never** for a DMZ desktop like
+> Haggai's.
+
+### `docker` inside dev mode is wrapped — it owns the leaky abstraction
+Because that `docker` drives the **host** daemon, a container you start is a *sibling on
+the host* in its own network namespace, not nested in the desktop. On this no-firewall
+DMZ box that means `docker run -p 8000:80` publishes to the **public internet** *and*
+still isn't reachable from the desktop's `localhost`. So in dev mode `docker` is the
+**`docker-guard`** wrapper (`dev/docker-guard`): it **refuses** the internet-exposing
+patterns (`-p`, `-P`, `--network host`, and a `docker compose` whose resolved config
+publishes a host port), **warns** when a service would be unreachable, and prints the
+pattern that actually works. Run **`docker haggai-help`** inside for the full model. To
+run e.g. vLLM privately and reach it on `localhost`:
+
+```bash
+docker run -d --gpus all --network container:haggai_computer \
+  vllm/vllm-openai:latest --model <hf-model>
+curl http://localhost:8000/v1/models      # works from the desktop; NOT on the internet
+```
+
+The wrapper is a guard rail, not an airtight wall (the raw `/usr/bin/docker` bypasses
+it). The airtight backstop is a host setting you choose — `/etc/docker/daemon.json` →
+`{"ip":"127.0.0.1"}` so the daemon default-binds published ports to loopback. See
+[`docs/SECURITY.md`](docs/SECURITY.md) §7a.
 
 ---
 
@@ -211,7 +232,7 @@ A desktop's container is a long-lived **pet**, not a throwaway:
 | `docker compose logs -f` | Watch the desktop / RustDesk logs. |
 | `docker compose exec -u user haggai_computer bash` | A shell as `user` inside. |
 | `./teardown.sh` | Remove the container (discards apt installs; **keeps `./home`** + image). |
-| `./teardown.sh --purge` | Above **and** delete `./home` (typed `DELETE` confirm). |
+| `./teardown.sh --purge` | Above **and** delete `./home` (immediate; the flag is the confirmation, no prompt). |
 
 ---
 
@@ -219,7 +240,7 @@ A desktop's container is a long-lived **pet**, not a throwaway:
 
 By default these containers never touch the RTX 5090: no `--gpus`, no NVIDIA runtime,
 software (CPU) video encoding only. The card stays free for your own compute. (The
-opt-in `--gpu` flag above is the single exception — and even then it attaches the GPU
+opt-in `--dev` mode above is the single exception — and even then it attaches the GPU
 for *compute* only; graphics still render on the CPU, so the desktop spends 0 VRAM.)
 
 ---

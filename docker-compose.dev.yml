@@ -1,0 +1,47 @@
+# =============================================================================
+# docker-compose.dev.yml — the SINGLE opt-in "dev mode" override, enabled by
+# `./setup.sh --dev <password>`. It does BOTH of the things a host-coupled dev
+# workstation needs, together, with no sub-options:
+#
+#   1. HOST GPU for compute — the nvidia-container-toolkit `nvidia` runtime, so
+#      `nvidia-smi` / CUDA / vLLM see the card. GRAPHICS STAY 100% ON THE CPU: the
+#      desktop is a software Xvfb framebuffer and LIBGL_ALWAYS_SOFTWARE forces
+#      OpenGL to software, so NONE of the GPU's VRAM is spent on the desktop —
+#      it's all free for compute. `compute,utility` requests CUDA + nvidia-smi,
+#      not graphics.
+#
+#   2. HOST DOCKER — bakes the Docker CLI + the docker-guard wrapper into the image
+#      (WITH_DEV build arg) and bind-mounts the host's docker socket, so the dev
+#      environment inside drives the HOST's Docker (build/run/compose, incl.
+#      GPU/CUDA containers). NO daemon runs in the container — it is NOT
+#      Docker-in-Docker; `docker` routes to the host. The entrypoint adds `user` to
+#      a group matching the socket's gid, so `docker` works without sudo.
+#
+# !! SECURITY: write access to /var/run/docker.sock is ROOT-EQUIVALENT on the host
+# !! (you can mount host root and become root). Dev mode deliberately hands the
+# !! container the keys to the host AND attaches the GPU. Use ONLY on a single-user
+# !! box the operator fully trusts — NEVER for Haggai's DMZ desktop. The in-guest
+# !! `docker` is the docker-guard wrapper, which refuses the patterns that would
+# !! publish a service to the public internet on this DMZ box (see dev/docker-guard
+# !! and docs/SECURITY.md), but the airtight backstop is a host change you choose:
+# !! /etc/docker/daemon.json -> "ip": "127.0.0.1". Haggai's default deployment never
+# !! includes this file, so his container has no GPU, no Docker CLI, and no socket.
+# =============================================================================
+services:
+  haggai_computer:
+    build:
+      args:
+        WITH_DEV: "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - LIBGL_ALWAYS_SOFTWARE=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
