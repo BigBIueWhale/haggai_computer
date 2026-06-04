@@ -8,36 +8,60 @@
 # inside the container.
 #
 # Defensive and strict, by design: it validates every precondition, asserts every
-# step actually took effect, and fails loud at the first unexpected state. There
-# are no silent fallbacks. It REFUSES to run if the container already exists, so a
-# re-run can never wipe Haggai's persistent writable layer (his installed
-# packages, /tmp, /etc, everything). Use ./teardown.sh to intentionally reset.
+# step actually took effect, fails LOUD (with diagnostics) at the first unexpected
+# state, and never silently falls back. It REFUSES to run if the container already
+# exists, so a re-run can never wipe Haggai's persistent writable layer (his
+# installed packages, /tmp, /etc, everything). Use ./teardown.sh to reset.
+#
+# HARD INVARIANT (learned the hard way): a *foreground* `docker compose exec` against
+# this container can wedge indefinitely — the in-container command finishes but the
+# exec client never returns, and `timeout` cannot tear it down. So this script runs
+# NO foreground exec anywhere. It sets both passwords with DETACHED (`-d`) execs and
+# verifies the results from the HOST side of the ./home bind mount.
 # =============================================================================
 set -euo pipefail
 
 # ---- constants (specific, not configurable) --------------------------------
 CONTAINER=haggai_computer
-IMAGE=haggai_computer:1.4.7
 SERVICE=haggai_computer
 HOST_PORT=21128
+CONTAINER_PORT=21118
 MIN_PW_LEN=12
 HEALTH_TIMEOUT=300        # seconds to wait for the container to become healthy
-PW_TIMEOUT=420            # total seconds to keep trying to set the password
+PW_TIMEOUT=420            # seconds to keep trying to set the RustDesk password
 PW_REFIRE=20              # seconds between (re)fires of the detached password setter
-IPC_SLEEP=3               # seconds between read-back polls
-EXEC_TIMEOUT=30           # hard cap on each (foreground) read-back exec
+POLL_SLEEP=3              # seconds between host-side read-back polls
+LINUX_PW_TIMEOUT=60       # seconds to wait for the detached Linux-password setter
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RD_TOML="$SCRIPT_DIR/home/.config/rustdesk/RustDesk.toml"  # bind-mounted; host-readable (uid 1000)
+LINUX_MARK="$SCRIPT_DIR/home/.haggai_linux_pw_ok"          # transient success marker (host-polled)
+LINUX_LOG="$SCRIPT_DIR/home/.haggai_linux_pw.log"          # transient diagnostics (never the password)
 
 log()  { printf '\033[1;32m[setup]\033[0m %s\n' "$*"; }
-die()  { printf '\033[1;31m[setup] FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
+warn() { printf '\033[1;33m[setup]\033[0m %s\n' "$*" >&2; }
+die()  { trap - ERR; printf '\033[1;31m[setup] FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# Remove the transient host-side provisioning artifacts on ANY exit.
+cleanup() { rm -f "$LINUX_MARK" "$LINUX_LOG" 2>/dev/null || true; }
+trap cleanup EXIT
+
+# Safety net for an UNGUARDED failure (set -e): name the line and the recovery path.
+on_err() {
+  local rc=$?
+  printf '\033[1;31m[setup] FATAL:\033[0m unexpected error (exit %s) near line %s.\n' \
+    "$rc" "${BASH_LINENO[0]:-?}" >&2
+  printf '[setup] The deployment may be half-provisioned. Run ./teardown.sh and retry.\n' >&2
+}
+trap on_err ERR
 
 usage() {
   cat >&2 <<EOF
 Usage: ./setup.sh <password>
 
   <password>   REQUIRED. Used for BOTH RustDesk access AND the 'user' sudo login
-               inside the container. Minimum ${MIN_PW_LEN} characters.
+               inside the container. Minimum ${MIN_PW_LEN} characters; no control
+               characters (newline/tab/etc.).
 
 Builds the image, starts the container, and provisions the password. Refuses to
 run if the container already exists (run ./teardown.sh first to reset).
@@ -45,15 +69,29 @@ EOF
   exit 2
 }
 
+# ---- container-state helpers (host-side only; never exec, so they can't wedge) ----
+container_status() { docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null || true; }
+assert_container_running() {
+  local s; s="$(container_status)"
+  [ "$s" = running ] || {
+    docker compose logs --tail=120 2>/dev/null || true
+    die "container '$CONTAINER' is '${s:-absent}' (expected 'running') mid-provisioning — see logs above."
+  }
+}
+
 # ---- argument validation ---------------------------------------------------
 [ "$#" -eq 1 ] || usage
 PASSWORD="$1"
-[ -n "$PASSWORD" ]                  || die "password must not be empty"
+[ -n "$PASSWORD" ]                   || die "password must not be empty"
 [ "${#PASSWORD}" -ge "$MIN_PW_LEN" ] || die "password too short: need >= ${MIN_PW_LEN} characters, got ${#PASSWORD}"
+case "$PASSWORD" in
+  *[[:cntrl:]]*) die "password must not contain control characters (newline, tab, etc.)" ;;
+esac
 
 # ---- host preconditions ----------------------------------------------------
-command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
+command -v docker  >/dev/null 2>&1 || die "docker not found on PATH"
 command -v timeout >/dev/null 2>&1 || die "coreutils 'timeout' not found on PATH"
+command -v ss      >/dev/null 2>&1 || die "iproute2 'ss' not found on PATH (needed for the final listener check)"
 docker info >/dev/null 2>&1 \
   || die "cannot talk to the Docker daemon (is it running, and are you in the 'docker' group?)"
 docker compose version >/dev/null 2>&1 \
@@ -72,29 +110,38 @@ fi
 
 # the persistent, isolated home must exist on the host before the bind-mount
 install -d "$SCRIPT_DIR/home"
+# clear any transient artifacts a previous interrupted run may have left behind
+rm -f "$LINUX_MARK" "$LINUX_LOG"
 
 # ---- build -----------------------------------------------------------------
 log "Building the image. This is intentionally large (full toolchain + RustDesk +"
 log "desktop); the FIRST build downloads/compiles a lot and can take a long while."
-docker compose build
+docker compose build || die "image build failed (see output above)"
 
 # ---- launch ----------------------------------------------------------------
 log "Starting the container..."
-docker compose up -d
+docker compose up -d || die "'docker compose up -d' failed (see output above)"
 
 # ---- wait until healthy (RustDesk Direct-IP listener is up on :21118) -------
+# Fail FAST on an exited/dead container instead of waiting out the whole timeout.
 log "Waiting for the RustDesk listener to come up (container health)..."
 start=$SECONDS
 while :; do
-  status="$(docker inspect -f '{{ if .State.Health }}{{ .State.Health.Status }}{{ else }}none{{ end }}' "$CONTAINER" 2>/dev/null || echo missing)"
-  case "$status" in
+  info="$(docker inspect -f '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CONTAINER" 2>/dev/null || true)"
+  cstatus="${info%%|*}"; hstatus="${info##*|}"
+  [ -n "$cstatus" ] || { docker compose logs --tail=120 || true; die "container '$CONTAINER' disappeared"; }
+  case "$cstatus" in
+    running) ;;
+    *) docker compose logs --tail=120 || true; die "container is '$cstatus' (not running) — see logs above" ;;
+  esac
+  case "$hstatus" in
     healthy)   break ;;
-    unhealthy) docker compose logs --tail=120 || true; die "container became unhealthy" ;;
-    missing)   docker compose logs --tail=120 || true; die "container '$CONTAINER' disappeared" ;;
+    unhealthy) docker compose logs --tail=120 || true; die "container became unhealthy — see logs above" ;;
+    *)         ;;   # starting / none → keep waiting
   esac
   if [ $(( SECONDS - start )) -ge "$HEALTH_TIMEOUT" ]; then
     docker compose logs --tail=120 || true
-    die "timed out after ${HEALTH_TIMEOUT}s waiting for 'healthy' (last status: $status)"
+    die "timed out after ${HEALTH_TIMEOUT}s waiting for 'healthy' (status: ${cstatus}/${hstatus})"
   fi
   sleep 3
 done
@@ -105,84 +152,107 @@ log "Container is healthy."
 # inspecting a live container):
 #   * run as root (-u 0) with the binary "installed" (under /usr) so core_main
 #     enables the UserMainIpcScope guard for this management command;
-#   * 1.4.7 IPC sockets are uid-scoped (/tmp/<App>-<uid>/ipc). Root does NOT use a
-#     fixed path: it scans /proc for the running `--server` (reading /proc/<pid>/exe
-#     across uids needs CAP_SYS_PTRACE — added in compose), takes its uid (1000),
-#     and connects to /tmp/RustDesk-1000/ipc (reached via the default DAC_OVERRIDE
-#     capability — one reason cap_drop:ALL is not used);
-#   * the server (uid 1000) then persists the encrypted password into
-#     /home/user/.config/rustdesk/RustDesk.toml AS `user`. That file is the ONLY
-#     authoritative success signal.
-# THE CRITICAL GOTCHA: `rustdesk --password` sets the password over IPC almost
-# immediately, but the 1.4.7 Flutter binary then leaves a process holding its stdio
-# open and never returns. Worse, a *foreground* `docker compose exec` against this
-# container can wedge for that same reason even when the command it runs is trivial
-# (even a grep), and `timeout` cannot rescue it — a SIGTERM to the compose client
-# does not tear down the in-container exec session (observed: `timeout 30` calls
-# still alive after minutes). So the rule here is absolute: NO foreground
-# `docker compose exec`, ever.
-#   * The password set runs DETACHED (`-d`, returns immediately).
-#   * The read-back does NOT exec at all: ./home is bind-mounted to /home/user, so
-#     RustDesk.toml is the host file $RD_TOML below — we grep it directly on the host
-#     (host runs as uid 1000, the same uid that owns the file).
-#   * We (re)fire on an interval rather than every poll, and never kill an in-flight
-#     attempt, so a slow first try is given time instead of being cut off.
-# DISPLAY is set because the binary may touch the UI; the password is passed via an
-# inherited env var, expanded INSIDE the container (single-quoted bash -c) so it
-# never reaches host argv. (A clean ./home — `./teardown.sh --purge` before
-# re-deploying — makes a non-empty password unambiguously mean THIS run set it.)
-RD_TOML="$SCRIPT_DIR/home/.config/rustdesk/RustDesk.toml"   # bind-mounted; host-readable
+#   * 1.4.7 IPC sockets are uid-scoped (/tmp/<App>-<uid>/ipc). Root scans /proc for
+#     the running `--server` (reading /proc/<pid>/exe across uids needs
+#     CAP_SYS_PTRACE — added in compose), takes its uid (1000), and connects to
+#     /tmp/RustDesk-1000/ipc (reached via the default DAC_OVERRIDE capability);
+#   * the server (uid 1000) then persists the encrypted password into RustDesk.toml.
+# THE GOTCHA + THE RULE: `rustdesk --password` sets the password over IPC then leaves
+# a process holding its stdio open and never returns; and (worse) a FOREGROUND
+# `docker compose exec` here can wedge for that same reason even running a trivial
+# grep, with `timeout` unable to kill it. So: NO foreground exec. The set runs
+# DETACHED (`-d`); the read-back does not exec at all — ./home is bind-mounted, so we
+# grep $RD_TOML directly on the host (host is uid 1000, the file's owner). We re-fire
+# on an interval (never killing an in-flight attempt) and check container liveness
+# each poll so a dead container fails fast instead of waiting out the timeout.
+# DISPLAY is set because the binary may touch the UI; the password rides an inherited
+# env var, expanded INSIDE the container (single-quoted bash -c) so it never reaches
+# host argv.
 log "Setting the RustDesk permanent password..."
 export RD_PASSWORD="$PASSWORD"
+
+# If ./home carried a RustDesk password over from a previous deployment (a
+# `./teardown.sh` WITHOUT --purge keeps ./home), clear just that one line — keeping
+# Haggai's persistent device id/keys — so a non-empty password below unambiguously
+# means THIS run's detached setter wrote it, not a leftover (no false positive).
+if [ -f "$RD_TOML" ] && grep -Eq "^password = '.+'" "$RD_TOML" 2>/dev/null; then
+  log "  (clearing a carried-over RustDesk password so the new one is verifiable)"
+  tmp="$(mktemp "${RD_TOML}.XXXXXX")" || die "could not create a temp file next to RustDesk.toml"
+  { grep -v '^password = ' "$RD_TOML" > "$tmp" && cat "$tmp" > "$RD_TOML"; } \
+    || { rm -f "$tmp"; die "failed to clear the carried-over RustDesk password in $RD_TOML"; }
+  rm -f "$tmp"
+  ! grep -Eq "^password = '.+'" "$RD_TOML" 2>/dev/null \
+    || die "carried-over RustDesk password still present after clearing — aborting"
+fi
+
 rd_ok=0
 pw_deadline=$(( SECONDS + PW_TIMEOUT ))
 last_fire=$(( SECONDS - PW_REFIRE ))      # make the first iteration fire immediately
 while [ "$SECONDS" -lt "$pw_deadline" ]; do
+  assert_container_running
   if [ $(( SECONDS - last_fire )) -ge "$PW_REFIRE" ]; then
     docker compose exec -d -u 0 -e RD_PASSWORD -e DISPLAY=:99 "$SERVICE" \
       bash -c 'rustdesk --password "$RD_PASSWORD"' >/dev/null 2>&1 || true
     last_fire=$SECONDS
   fi
-  sleep "$IPC_SLEEP"
+  sleep "$POLL_SLEEP"
   # Read back on the HOST side of the bind mount — no docker exec, so it can't wedge.
   if grep -Eq "^password = '.+'" "$RD_TOML" 2>/dev/null; then
     rd_ok=1
     break
   fi
 done
-[ "$rd_ok" -eq 1 ] \
-  || die "RustDesk password was not persisted to RustDesk.toml within ${PW_TIMEOUT}s (is --server up?)."
+if [ "$rd_ok" -ne 1 ]; then
+  if [ -f "$RD_TOML" ]; then
+    warn "RustDesk.toml exists but shows no password — --server is up but is not accepting --password."
+  else
+    warn "RustDesk.toml was never created — the --server did not initialise its config."
+  fi
+  docker compose logs --tail=120 2>/dev/null || true
+  die "RustDesk password not persisted within ${PW_TIMEOUT}s (diagnostics above). Run ./teardown.sh and retry."
+fi
 # Clean up the detached client(s) — DETACHED (pkill excludes its own pid), so it
 # returns at once and killing the stuck Flutter process can't wedge the host.
 docker compose exec -d -u 0 "$SERVICE" pkill -f 'rustdesk --password' >/dev/null 2>&1 || true
 log "RustDesk permanent password set and verified."
 
 # ---- set the 'user' Linux / sudo password to the SAME value ----------------
-# /etc/shadow lives in the container's writable layer (NOT bind-mounted), so this
-# must run inside the container — but, per the no-foreground-exec rule above, it runs
-# DETACHED. ONE detached exec sets the password and self-verifies (passwd -S => P),
-# and only on success writes a marker into the bind-mounted home, which we then poll
-# from the HOST. The password rides the already-exported env var (never host argv);
-# chpasswd reads it from stdin inside the container.
-MARK="$SCRIPT_DIR/home/.haggai_linux_pw_ok"
-rm -f "$MARK"
+# /etc/shadow is in the container's writable layer (NOT bind-mounted), so this must
+# run inside the container — but, per the no-foreground-exec rule, DETACHED. ONE
+# detached exec sets the password, self-verifies (passwd -S => P), records a
+# diagnostics line (never the password) to $LINUX_LOG, and only on success writes the
+# $LINUX_MARK marker. We poll the marker on the HOST, checking liveness each second.
 log "Setting the 'user' Linux/sudo password (same value)..."
 docker compose exec -d -u 0 -e RD_PASSWORD "$SERVICE" bash -c '
-  printf "user:%s\n" "$RD_PASSWORD" | chpasswd \
-    && [ "$(passwd -S user | awk "{print \$2}")" = P ] \
-    && : > /home/user/.haggai_linux_pw_ok
+  { printf "user:%s\n" "$RD_PASSWORD" | chpasswd ; } 2>/home/user/.haggai_linux_pw.log
+  crc=$?
+  st="$(passwd -S user 2>>/home/user/.haggai_linux_pw.log | awk "{print \$2}")"
+  echo "chpasswd_rc=$crc passwd_status=$st" >>/home/user/.haggai_linux_pw.log
+  [ "$crc" = 0 ] && [ "$st" = P ] && : >/home/user/.haggai_linux_pw_ok
 ' >/dev/null 2>&1 || true
 lin_ok=0
-lin_deadline=$(( SECONDS + EXEC_TIMEOUT ))
+lin_deadline=$(( SECONDS + LINUX_PW_TIMEOUT ))
 while [ "$SECONDS" -lt "$lin_deadline" ]; do
-  [ -f "$MARK" ] && { lin_ok=1; break; }
+  [ -f "$LINUX_MARK" ] && { lin_ok=1; break; }
+  assert_container_running
   sleep 1
 done
-rm -f "$MARK"
 unset RD_PASSWORD
-[ "$lin_ok" -eq 1 ] \
-  || die "Linux/sudo password for 'user' was not set/verified within ${EXEC_TIMEOUT}s."
+if [ "$lin_ok" -ne 1 ]; then
+  [ -f "$LINUX_LOG" ] && { warn "in-container diagnostics:"; sed 's/^/    /' "$LINUX_LOG" >&2 || true; }
+  docker compose logs --tail=60 2>/dev/null || true
+  die "Linux/sudo password not confirmed within ${LINUX_PW_TIMEOUT}s (diagnostics above). Run ./teardown.sh and retry."
+fi
 log "Linux/sudo password set and verified."
+
+# ---- final end-state assertions (all host-side) ----------------------------
+assert_container_running
+hfinal="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CONTAINER" 2>/dev/null || true)"
+[ "$hfinal" = healthy ] || die "container is no longer healthy at the end of provisioning (status: ${hfinal:-unknown})"
+grep -Eq "^password = '.+'" "$RD_TOML" 2>/dev/null || die "final check: RustDesk password missing from RustDesk.toml"
+ss -ltn 2>/dev/null | awk -v port="$HOST_PORT" '$4 ~ ":"port"$" {found=1} END {exit found?0:1}' \
+  || die "final check: host port ${HOST_PORT}/tcp is not listening (port publishing failed?)"
+log "Final checks passed: running + healthy, RustDesk password present, ${HOST_PORT}/tcp listening."
 
 # ---- done: print how to connect --------------------------------------------
 LAN_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
