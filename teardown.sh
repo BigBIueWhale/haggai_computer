@@ -66,10 +66,12 @@ docker compose down --remove-orphans
 if [ "$PURGE" -eq 1 ]; then
   if [ -d "$HOME_DIR" ]; then
     # Delete as root inside a throwaway container so that any root-owned files
-    # Haggai created via `sudo` are also removed. The ./home directory itself is
-    # preserved (it is the bind-mount target for the next ./setup.sh).
+    # Haggai created via `sudo` are also removed. The ./home directory itself — and
+    # its tracked .gitkeep placeholder — are preserved (./home is the bind-mount
+    # target for the next ./setup.sh; keeping .gitkeep keeps the git tree clean).
     log "Deleting all contents of ./home (as root, to catch root-owned files)..."
-    docker run --rm -v "$HOME_DIR":/purge "$BASE_IMAGE" find /purge -mindepth 1 -delete
+    docker run --rm -v "$HOME_DIR":/purge "$BASE_IMAGE" \
+      find /purge -mindepth 1 ! -name .gitkeep -delete
   fi
   log "Purge complete. ./home is empty. Re-create with: ./setup.sh <password>"
   log "(The built image was kept for a fast rebuild. To reclaim its disk space:"

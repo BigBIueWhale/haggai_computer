@@ -22,10 +22,10 @@ SERVICE=haggai_computer
 HOST_PORT=21128
 MIN_PW_LEN=12
 HEALTH_TIMEOUT=300        # seconds to wait for the container to become healthy
-PW_TIMEOUT=420            # total seconds to retry the password set — long enough to
-                          #   outlast the --server's cold-start (config-sync) window
-IPC_SLEEP=3               # seconds between tries
-EXEC_TIMEOUT=30           # hard cap on each rustdesk exec
+PW_TIMEOUT=420            # total seconds to keep trying to set the password
+PW_REFIRE=20              # seconds between (re)fires of the detached password setter
+IPC_SLEEP=3               # seconds between read-back polls
+EXEC_TIMEOUT=30           # hard cap on each (foreground) read-back exec
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -113,32 +113,33 @@ log "Container is healthy."
 #   * the server (uid 1000) then persists the encrypted password into
 #     /home/user/.config/rustdesk/RustDesk.toml AS `user`. That file is the ONLY
 #     authoritative success signal, and we read it back to confirm.
-# THE CRITICAL GOTCHA: after setting the password the 1.4.7 Flutter binary prints
-# "Done!" and then NEVER EXITS — `rustdesk --password` blocks forever. So a
-# foreground `docker compose exec` running it never returns, and `timeout` cannot
-# rescue it either: a SIGTERM to the compose client does not tear down the
-# in-container exec session, so the whole call wedges indefinitely (observed: a
-# `timeout 30` still alive after 90 minutes). The fix is to NEVER wait on it — fire
-# it DETACHED (`docker compose exec -d`, which returns the instant the process is
-# launched), then poll RustDesk.toml for the password. We reap-then-refire each
-# round so at most one stuck client ever exists, and keep going up to PW_TIMEOUT in
-# case the server's IPC is not ready on the first attempt. Every *blocking* exec is
-# time-boxed so setup can never wedge again. DISPLAY is set because the Flutter
-# binary may touch the UI; the password is passed via an inherited env var, expanded
-# INSIDE the container (single-quoted bash -c) so it never reaches host argv. (A
-# clean ./home — run `./teardown.sh --purge` before re-deploying — makes a non-empty
-# password unambiguously mean THIS run set it.)
+# THE CRITICAL GOTCHA: `rustdesk --password` sets the password over IPC almost
+# immediately, but the 1.4.7 Flutter binary then leaves a process holding its stdio
+# open and never returns. So ANY *foreground* `docker compose exec` that runs it — or
+# that later kills it — inherits that open pipe and hangs waiting for EOF, and
+# `timeout` cannot rescue it (a SIGTERM to the compose client does not tear down the
+# in-container exec session; observed: a `timeout 30` still alive after 90 minutes).
+# Therefore EVERYTHING that touches the Flutter client runs DETACHED (`-d`, which
+# returns the instant it is launched): both the password set AND the cleanup kill.
+# The ONLY foreground exec is the read-back — a plain grep that never touches the
+# client, so it always returns fast — and that file is the authoritative success
+# signal. We (re)fire on an interval rather than every poll, and never kill an
+# in-flight attempt, so a slow first try is given time instead of being cut off.
+# DISPLAY is set because the binary may touch the UI; the password is passed via an
+# inherited env var, expanded INSIDE the container (single-quoted bash -c) so it
+# never reaches host argv. (A clean ./home — `./teardown.sh --purge` before
+# re-deploying — makes a non-empty password unambiguously mean THIS run set it.)
 log "Setting the RustDesk permanent password..."
 export RD_PASSWORD="$PASSWORD"
 rd_ok=0
 pw_deadline=$(( SECONDS + PW_TIMEOUT ))
+last_fire=$(( SECONDS - PW_REFIRE ))      # make the first iteration fire immediately
 while [ "$SECONDS" -lt "$pw_deadline" ]; do
-  # Reap any previous (deliberately) stuck attempt so at most one ever exists...
-  timeout "$EXEC_TIMEOUT" docker compose exec -T -u 0 "$SERVICE" \
-    pkill -f 'rustdesk --password' >/dev/null 2>&1 || true
-  # ...then fire a fresh one DETACHED so we never block on the call that won't return.
-  docker compose exec -d -u 0 -e RD_PASSWORD -e DISPLAY=:99 "$SERVICE" \
-    bash -c 'rustdesk --password "$RD_PASSWORD"' >/dev/null 2>&1 || true
+  if [ $(( SECONDS - last_fire )) -ge "$PW_REFIRE" ]; then
+    docker compose exec -d -u 0 -e RD_PASSWORD -e DISPLAY=:99 "$SERVICE" \
+      bash -c 'rustdesk --password "$RD_PASSWORD"' >/dev/null 2>&1 || true
+    last_fire=$SECONDS
+  fi
   sleep "$IPC_SLEEP"
   if timeout "$EXEC_TIMEOUT" docker compose exec -T -u 0 "$SERVICE" \
        bash -c "grep -Eq \"^password = '.+'\" /home/user/.config/rustdesk/RustDesk.toml" 2>/dev/null; then
@@ -146,12 +147,12 @@ while [ "$SECONDS" -lt "$pw_deadline" ]; do
     break
   fi
 done
-# Final reap: the successful attempt's client is, by design, still stuck — kill it.
-timeout "$EXEC_TIMEOUT" docker compose exec -T -u 0 "$SERVICE" \
-  pkill -f 'rustdesk --password' >/dev/null 2>&1 || true
 unset RD_PASSWORD
 [ "$rd_ok" -eq 1 ] \
   || die "RustDesk password was not persisted to RustDesk.toml within ${PW_TIMEOUT}s (is --server up?)."
+# Clean up the detached client(s) — DETACHED, so killing the stuck Flutter process
+# can never wedge the host the way a foreground exec would.
+docker compose exec -d -u 0 "$SERVICE" pkill -f 'rustdesk --password' >/dev/null 2>&1 || true
 log "RustDesk permanent password set and verified."
 
 # ---- set the 'user' Linux / sudo password to the SAME value ----------------
