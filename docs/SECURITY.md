@@ -173,6 +173,25 @@ he still consciously approves actions.
 
 ---
 
+## 6a. Browser & VS Code sandboxes — the same call as Codex
+
+Firefox, Chrome, and VS Code are pre-installed as **real `.deb` packages** (Ubuntu
+24.04 ships them as *snaps*, and snapd cannot run in this non-systemd container, so
+the snap path is a dead end here). Chrome and VS Code are Chromium/Electron: their
+renderer sandboxes rely on **unprivileged user namespaces**, which Ubuntu 24.04
+blocks by default (`kernel.apparmor_restrict_unprivileged_userns`). Rather than flip
+that host-wide sysctl or weaken the container's seccomp (cf. §6), we launch **Chrome
+and VS Code with `--no-sandbox`** and let **Firefox** fall back to its seccomp-only
+content sandbox. The container is the isolation boundary, exactly as for Codex.
+
+Honest trade-off: with `--no-sandbox`, a renderer exploit (e.g. a malicious web page)
+is **not** further confined by the browser's own sandbox — but it is still confined
+to Haggai's container (it cannot reach the host or your files). If you want the
+in-browser sandbox back, the posture-consistent way is a per-desktop **VM** (a
+separate kernel), not loosening this container.
+
+---
+
 ## 7. No NVIDIA
 
 No `--gpus`, no NVIDIA container runtime, software video encoding only

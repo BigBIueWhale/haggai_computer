@@ -1100,6 +1100,66 @@ RUN curl -fsSL -o /tmp/rustdesk.deb \
 ENV RUSTDESK_FORCED_DISPLAY_SERVER=x11
 
 # ============================================================
+# DESKTOP GUI APPS — Firefox, Chrome, VS Code (real .deb, never snaps)
+# ============================================================
+# On Ubuntu 24.04 `apt install firefox` / `chromium` pull snap STUBS, and snapd
+# cannot run in this non-systemd container. So we install the upstream .deb builds
+# from each vendor's official APT repo:
+#   * Firefox — Mozilla's repo, PINNED above Ubuntu's snap stub so a later
+#     `apt install firefox` keeps resolving to the real .deb (not the snap).
+#   * Google Chrome — Google's repo.
+#   * VS Code (`code`) — Microsoft's repo.
+# All render in software (this container never touches the GPU). Sandboxing note:
+# Chrome and VS Code are Chromium/Electron; their renderer sandboxes want unprivileged
+# user namespaces, which Ubuntu 24.04 restricts by default
+# (kernel.apparmor_restrict_unprivileged_userns) and which we do NOT re-enable
+# host-wide. Consistent with the Codex decision in docs/SECURITY.md (the CONTAINER is
+# the isolation boundary), Chrome and Code launch with --no-sandbox; Firefox falls
+# back to its seccomp-only content sandbox on its own.
+RUN install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg \
+         -o /etc/apt/keyrings/packages.mozilla.org.asc \
+    && echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
+         > /etc/apt/sources.list.d/mozilla.list \
+    && printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' \
+         > /etc/apt/preferences.d/mozilla \
+    && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+         -o /etc/apt/keyrings/google-chrome.asc \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main" \
+         > /etc/apt/sources.list.d/google-chrome.list \
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+         -o /etc/apt/keyrings/microsoft.asc \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.asc] https://packages.microsoft.com/repos/code stable main" \
+         > /etc/apt/sources.list.d/vscode.list \
+    && apt-get update \
+    && apt-get install -y firefox google-chrome-stable code \
+    && rm -rf /var/lib/apt/lists/* \
+    && test -x /usr/bin/firefox \
+    && test -x /usr/bin/google-chrome-stable \
+    && test -x /usr/bin/code
+
+# Chrome and VS Code (Chromium/Electron) can't initialise their userns sandbox here,
+# so launch them with --no-sandbox: a shim for each terminal command plus a patch to
+# the Applications-menu launchers. Packaged binaries are left untouched (clean
+# upgrades). Assertions fail the BUILD if a vendor changes its .desktop Exec, rather
+# than shipping a menu icon that silently launches an unstartable app.
+RUN set -e; \
+    printf '#!/bin/sh\n# container is the sandbox here (docs/SECURITY.md)\nexec /usr/bin/google-chrome-stable --no-sandbox "$@"\n' \
+      > /usr/local/bin/google-chrome; \
+    chmod 0755 /usr/local/bin/google-chrome; \
+    sed -ri 's#^Exec=/usr/bin/google-chrome(-stable)?#Exec=/usr/local/bin/google-chrome#' \
+      /usr/share/applications/google-chrome.desktop; \
+    grep -q '^Exec=/usr/local/bin/google-chrome' /usr/share/applications/google-chrome.desktop; \
+    if grep -q '^Exec=/usr/bin/google-chrome' /usr/share/applications/google-chrome.desktop; then \
+      echo 'ERROR: chrome .desktop still launches the un-wrapped binary'; exit 1; fi; \
+    printf '#!/bin/sh\n# container is the sandbox here (docs/SECURITY.md)\nexec /usr/bin/code --no-sandbox "$@"\n' \
+      > /usr/local/bin/code; \
+    chmod 0755 /usr/local/bin/code; \
+    for d in code code-url-handler; do f="/usr/share/applications/$d.desktop"; \
+      [ -f "$f" ] && sed -ri 's#^Exec=/usr/share/code/code#Exec=/usr/share/code/code --no-sandbox#' "$f" || true; done; \
+    grep -q -- '--no-sandbox' /usr/share/applications/code.desktop
+
+# ============================================================
 # USER SETUP
 # ============================================================
 # Interactive account `user` (uid 1000): a PASSWORD-REQUIRED sudoer.

@@ -109,6 +109,10 @@ with its original explanatory comments kept. Highlights:
 - **Docs/media/OCR:** ffmpeg, imagemagick, pandoc, LibreOffice, tesseract (+ langs),
   Playwright (Chromium+Firefox), and a comprehensive font set.
 - **Editors/CLIs:** vim/neovim/emacs/micro, ripgrep/fd/bat/fzf, git/gh, tmux, etc.
+- **Desktop GUI apps:** **Firefox**, **Google Chrome**, and **VS Code**, pre-installed
+  as real `.deb`s. (Ubuntu 24.04 ships these as *snaps*, and snapd can't run in a
+  non-systemd container — so the `.deb` builds are the working path here; `apt install
+  firefox` stays pinned to Mozilla's `.deb` too.)
 
 **Deliberately excluded** (your instruction): the **Qwen** CLI and the **Mistral
 `vibe`** CLI (and their Ollama/air-gap scaffolding). `ttyd` is built as a tool but
