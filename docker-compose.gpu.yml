@@ -1,0 +1,26 @@
+# =============================================================================
+# docker-compose.gpu.yml — OPTIONAL GPU override, enabled by `./setup.sh --gpu`.
+#
+# Gives the container the host's NVIDIA GPU for CUDA / compute (LLMs, etc.) via the
+# nvidia-container-toolkit's `nvidia` runtime. GRAPHICS STAY 100% ON THE CPU: the
+# desktop is a software Xvfb framebuffer (it never uses the GPU), and
+# LIBGL_ALWAYS_SOFTWARE forces OpenGL to software too — so NONE of the GPU's VRAM is
+# spent on the desktop; it's all free for compute. `compute,utility` requests the
+# CUDA + nvidia-smi capabilities, not graphics/video.
+#
+# Requires the NVIDIA driver + nvidia-container-toolkit on THIS host (setup.sh checks).
+# Haggai's default deployment never includes this file, so his container is GPU-free.
+# =============================================================================
+services:
+  haggai_computer:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - LIBGL_ALWAYS_SOFTWARE=1

@@ -200,6 +200,27 @@ free for your compute.
 
 ---
 
+## 7a. Optional dev flags (GPU, host Docker) — OFF by default
+
+`./setup.sh` has two opt-in flags. Both are **OFF by default**: Haggai's deployment
+uses neither, and the default image/runtime is byte-identical to before.
+
+- **`--gpu`** attaches the host NVIDIA GPU for **compute only**. Graphics never touch
+  it (software Xvfb + `LIBGL_ALWAYS_SOFTWARE=1`), so it spends **0 VRAM** on the
+  desktop. It adds **no new exposure** — it's a `--gpus` device reservation, not a
+  port. Requires the host's `nvidia-container-toolkit`.
+- **`--host-docker`** bind-mounts `/var/run/docker.sock` into the container and bakes
+  in the Docker CLI. **This is ROOT-EQUIVALENT on the host** — exactly as the
+  personal_server README §12 states: *"anyone who can write to /var/run/docker.sock
+  can mount the host root filesystem and become root."* It deliberately hands the
+  container the keys to the host, for a single-user dev box where the operator already
+  has that power. **NEVER enable it for Haggai's DMZ desktop** (or any box where the
+  desktop user is not the host's owner): combined with the internet-facing,
+  `--no-sandbox` browsers (§6a), a desktop compromise would become host root. setup.sh
+  prints a loud warning whenever the flag is used.
+
+---
+
 ## 8. Optional further hardening (not enabled — offered)
 
 - **userns-remap:** map container-root to an unprivileged host UID so even

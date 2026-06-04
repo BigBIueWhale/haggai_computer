@@ -1160,6 +1160,33 @@ RUN set -e; \
     grep -q -- '--no-sandbox' /usr/share/applications/code.desktop
 
 # ============================================================
+# OPTIONAL: host Docker CLI (build arg WITH_HOST_DOCKER, default 0 = OFF)
+# ============================================================
+# Baked in ONLY when built with --build-arg WITH_HOST_DOCKER=1, which
+# `./setup.sh --host-docker` does via docker-compose.host-docker.yml. It installs the
+# Docker *client* only (no daemon, no containerd) so that — with the host's
+# /var/run/docker.sock bind-mounted in — the in-container dev environment can drive
+# the HOST's Docker (build/run/compose, including GPU/CUDA containers). Default 0
+# leaves Haggai's image with no Docker client at all (byte-identical behaviour to
+# before). SECURITY: the host socket is root-equivalent; see docs/SECURITY.md and
+# docker-compose.host-docker.yml.
+ARG WITH_HOST_DOCKER=0
+RUN if [ "$WITH_HOST_DOCKER" = "1" ]; then \
+      set -eux; \
+      install -m 0755 -d /etc/apt/keyrings; \
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
+      chmod a+r /etc/apt/keyrings/docker.asc; \
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && printf '%s' "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" \
+        > /etc/apt/sources.list.d/docker.list; \
+      apt-get update; \
+      apt-get install -y docker-ce-cli docker-buildx-plugin docker-compose-plugin; \
+      rm -rf /var/lib/apt/lists/*; \
+      test -x /usr/bin/docker; \
+    else \
+      echo "WITH_HOST_DOCKER=0 (default) — Docker CLI not installed"; \
+    fi
+
+# ============================================================
 # USER SETUP
 # ============================================================
 # Interactive account `user` (uid 1000): a PASSWORD-REQUIRED sudoer.

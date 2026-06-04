@@ -147,6 +147,40 @@ Each desktop lands on its own `0.0.0.0:<port>` — add a matching allow-list lin
 
 ---
 
+## Optional flags: GPU and host Docker (advanced, off by default)
+
+Two opt-in flags to `./setup.sh`, both **OFF by default** — Haggai's Yeshiva
+deployment uses neither and the default image/runtime is unchanged (`./setup.sh
+--help` lists everything). These are for when *you* run the desktop on your own GPU
+server, not a locked-down friend.
+
+```bash
+./setup.sh --gpu '<password>'                  # CUDA/compute on the host GPU
+./setup.sh --host-docker '<password>'          # drive the host's Docker from inside
+./setup.sh --gpu --host-docker '<password>'    # both
+```
+
+- **`--gpu`** — gives the container the host NVIDIA GPU for **CUDA / compute** (LLMs,
+  PyTorch, …) via the nvidia-container-toolkit. **Graphics stay 100% on the CPU** (the
+  desktop is a software Xvfb framebuffer and OpenGL is forced to software), so **0 VRAM
+  is spent on the desktop** — all of it stays free for compute. That makes this the
+  right tool for a **no-iGPU** server, where a *native* desktop would be forced onto
+  the GPU and eat VRAM. Host prerequisites: the NVIDIA driver **and**
+  `nvidia-container-toolkit` (setup.sh checks both, fails loud if missing). Run LLMs
+  directly in the desktop — `ollama serve`, `llama.cpp`, CUDA PyTorch — no nested
+  Docker needed.
+- **`--host-docker`** — bakes the Docker **CLI** into the image and bind-mounts
+  `/var/run/docker.sock`, so the dev environment inside can `docker build/run/compose`
+  on the **host** (incl. GPU containers); `user` gets socket access without `sudo`.
+  **⚠ This is root-equivalent on the host** (socket write access = host root). Use it
+  **only** on a single-user box you fully trust — **never** for a DMZ desktop like
+  Haggai's.
+
+Each flag is verified after launch (GPU visible inside; host daemon reachable + `user`
+in the socket group) and fails loud if it didn't take. See `docs/SECURITY.md`.
+
+---
+
 ## Persistence — each desktop is a real, whole machine
 
 A desktop's container is a long-lived **pet**, not a throwaway:
@@ -183,8 +217,10 @@ A desktop's container is a long-lived **pet**, not a throwaway:
 
 ## No NVIDIA, by design
 
-These containers never touch the RTX 5090: no `--gpus`, no NVIDIA runtime, software
-(CPU) video encoding only. The card stays free for your own compute.
+By default these containers never touch the RTX 5090: no `--gpus`, no NVIDIA runtime,
+software (CPU) video encoding only. The card stays free for your own compute. (The
+opt-in `--gpu` flag above is the single exception — and even then it attaches the GPU
+for *compute* only; graphics still render on the CPU, so the desktop spends 0 VRAM.)
 
 ---
 

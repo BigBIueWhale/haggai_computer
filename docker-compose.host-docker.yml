@@ -1,0 +1,23 @@
+# =============================================================================
+# docker-compose.host-docker.yml — OPTIONAL host-Docker override, enabled by
+# `./setup.sh --host-docker`.
+#
+# Gives the desktop container control of the HOST's Docker daemon, so the dev
+# environment inside can `docker build/run/compose ...` against the host (including
+# GPU/CUDA containers). It bakes the Docker CLI into the IMAGE (the WITH_HOST_DOCKER
+# build arg) and bind-mounts the host docker socket. The entrypoint adds `user` to a
+# group matching the socket's gid, so `docker` works without sudo inside.
+#
+# !! SECURITY: write access to /var/run/docker.sock is ROOT-EQUIVALENT on the host
+# !! (you can mount host root and become root). This deliberately hands the container
+# !! the keys to the host. Use ONLY on a single-user box the operator fully trusts —
+# !! NEVER for Haggai's DMZ desktop. Haggai's default deployment never includes this
+# !! file, so his container has neither the Docker CLI nor the socket.
+# =============================================================================
+services:
+  haggai_computer:
+    build:
+      args:
+        WITH_HOST_DOCKER: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

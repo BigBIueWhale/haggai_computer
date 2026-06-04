@@ -37,13 +37,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RD_TOML="$SCRIPT_DIR/home/.config/rustdesk/RustDesk.toml"  # bind-mounted; host-readable (uid 1000)
 LINUX_MARK="$SCRIPT_DIR/home/.haggai_linux_pw_ok"          # transient success marker (host-polled)
 LINUX_LOG="$SCRIPT_DIR/home/.haggai_linux_pw.log"          # transient diagnostics (never the password)
+GPU_MARK="$SCRIPT_DIR/home/.haggai_gpu_ok"                 # transient: --gpu verification marker
+HOSTDOCKER_MARK="$SCRIPT_DIR/home/.haggai_hostdocker_ok"   # transient: --host-docker verification marker
 
 log()  { printf '\033[1;32m[setup]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[setup]\033[0m %s\n' "$*" >&2; }
 die()  { trap - ERR; printf '\033[1;31m[setup] FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # Remove the transient host-side provisioning artifacts on ANY exit.
-cleanup() { rm -f "$LINUX_MARK" "$LINUX_LOG" 2>/dev/null || true; }
+cleanup() { rm -f "$LINUX_MARK" "$LINUX_LOG" "$GPU_MARK" "$HOSTDOCKER_MARK" 2>/dev/null || true; }
 trap cleanup EXIT
 
 # Safety net for an UNGUARDED failure (set -e): name the line and the recovery path.
@@ -55,19 +57,31 @@ on_err() {
 }
 trap on_err ERR
 
-usage() {
-  cat >&2 <<EOF
-Usage: ./setup.sh <password>
+print_help() {
+  cat <<EOF
+Usage: ./setup.sh [options] <password>
 
-  <password>   REQUIRED. Used for BOTH RustDesk access AND the 'user' sudo login
-               inside the container. Minimum ${MIN_PW_LEN} characters; no control
-               characters (newline/tab/etc.).
+  <password>        REQUIRED. Used for BOTH RustDesk access AND the 'user' sudo
+                    login inside the container. >= ${MIN_PW_LEN} characters; no
+                    control characters (newline/tab/etc.).
 
-Builds the image, starts the container, and provisions the password. Refuses to
-run if the container already exists (run ./teardown.sh first to reset).
+Options (all OPTIONAL and OFF by default — Haggai's deployment uses NONE of them):
+  --gpu             Give the container the host NVIDIA GPU for CUDA / compute (via
+                    the nvidia-container-toolkit). Graphics stay on the CPU, so no
+                    VRAM is spent on the desktop. Requires the NVIDIA driver + the
+                    container toolkit already installed on THIS host.
+  --host-docker     Give the container control of the HOST's Docker: bakes the Docker
+                    CLI into the image and bind-mounts /var/run/docker.sock so the dev
+                    environment inside can build/run containers on the host.
+                    WARNING: this is ROOT-EQUIVALENT on the host — use only on a
+                    single-user box you fully trust, NEVER for a DMZ desktop.
+  -h, --help        Show this help and exit.
+
+Builds the image, starts the container, and provisions the password. Refuses to run
+if the container already exists (run ./teardown.sh first to reset).
 EOF
-  exit 2
 }
+usage() { print_help >&2; exit 2; }
 
 # ---- container-state helpers (host-side only; never exec, so they can't wedge) ----
 container_status() { docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null || true; }
@@ -79,9 +93,22 @@ assert_container_running() {
   }
 }
 
-# ---- argument validation ---------------------------------------------------
-[ "$#" -eq 1 ] || usage
-PASSWORD="$1"
+# ---- argument parsing (flags in any order; exactly one positional: the password) --
+GPU=0
+HOST_DOCKER=0
+POSITIONAL=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)     print_help; exit 0 ;;
+    --gpu)         GPU=1; shift ;;
+    --host-docker) HOST_DOCKER=1; shift ;;
+    --)            shift; while [ "$#" -gt 0 ]; do POSITIONAL+=("$1"); shift; done ;;
+    -*)            die "unknown option: $1  (run ./setup.sh --help)" ;;
+    *)             POSITIONAL+=("$1"); shift ;;
+  esac
+done
+[ "${#POSITIONAL[@]}" -eq 1 ] || usage
+PASSWORD="${POSITIONAL[0]}"
 [ -n "$PASSWORD" ]                   || die "password must not be empty"
 [ "${#PASSWORD}" -ge "$MIN_PW_LEN" ] || die "password too short: need >= ${MIN_PW_LEN} characters, got ${#PASSWORD}"
 case "$PASSWORD" in
@@ -100,6 +127,33 @@ docker compose version >/dev/null 2>&1 \
 [ -f "$SCRIPT_DIR/Dockerfile" ]         || die "Dockerfile not found next to setup.sh"
 
 cd "$SCRIPT_DIR"
+
+# ---- optional modes: assemble COMPOSE_FILE + check each flag's preconditions ------
+# Default (no flags) => COMPOSE_FILE is exactly docker-compose.yml, identical to
+# before. Each flag appends its override file (compose merges them) and is gated by a
+# fail-loud precondition check, in the spirit of the personal_server install scripts.
+COMPOSE_FILES="docker-compose.yml"
+if [ "$GPU" -eq 1 ]; then
+  [ -f docker-compose.gpu.yml ] || die "--gpu: docker-compose.gpu.yml is missing"
+  command -v nvidia-smi >/dev/null 2>&1 \
+    || die "--gpu: 'nvidia-smi' not found — install the NVIDIA driver on this host first"
+  nvidia-smi -L >/dev/null 2>&1 \
+    || die "--gpu: 'nvidia-smi -L' failed — the NVIDIA driver is not working"
+  docker info 2>/dev/null | grep -qiE 'Runtimes:.*nvidia|nvidia\.com/gpu' \
+    || die "--gpu: Docker has no NVIDIA runtime/CDI — install nvidia-container-toolkit and run 'sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker'"
+  COMPOSE_FILES="$COMPOSE_FILES:docker-compose.gpu.yml"
+  log "Mode: --gpu (host NVIDIA GPU for compute; graphics stay on the CPU)."
+fi
+if [ "$HOST_DOCKER" -eq 1 ]; then
+  [ -f docker-compose.host-docker.yml ] || die "--host-docker: docker-compose.host-docker.yml is missing"
+  [ -S /var/run/docker.sock ] \
+    || die "--host-docker: /var/run/docker.sock not found — is the host Docker daemon running?"
+  COMPOSE_FILES="$COMPOSE_FILES:docker-compose.host-docker.yml"
+  warn "Mode: --host-docker — the container will get ROOT-EQUIVALENT control of THIS"
+  warn "      host's Docker (bind-mounting /var/run/docker.sock). Only do this on a box"
+  warn "      you fully trust; never for a DMZ desktop."
+fi
+export COMPOSE_FILE="$COMPOSE_FILES"
 
 # ---- refuse if already deployed (protects the persistent writable layer) ---
 if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
@@ -146,6 +200,43 @@ while :; do
   sleep 3
 done
 log "Container is healthy."
+
+# ---- verify the optional modes actually took effect (detached exec -> host marker) ---
+# Same no-foreground-exec rule as the passwords: a detached exec writes a marker into
+# the bind-mounted home, then we poll it from the host.
+if [ "$GPU" -eq 1 ]; then
+  log "Verifying GPU passthrough (nvidia-smi inside the container)..."
+  rm -f "$GPU_MARK"
+  # Detached EXISTENCE-marker: the in-container pipe decides and we only `touch` the
+  # marker on success. Detached execs reliably create a file but do NOT reliably
+  # capture a command's stdout to a bind-mounted file, so we never depend on content.
+  docker compose exec -d -u 0 "$SERVICE" \
+    bash -c 'nvidia-smi -L 2>/dev/null | grep -qi "GPU [0-9]" && : > /home/user/.haggai_gpu_ok' \
+    >/dev/null 2>&1 || true
+  gpu_ok=0; gdl=$(( SECONDS + 30 ))
+  while [ "$SECONDS" -lt "$gdl" ]; do [ -f "$GPU_MARK" ] && { gpu_ok=1; break; }; sleep 1; done
+  rm -f "$GPU_MARK"
+  [ "$gpu_ok" -eq 1 ] \
+    || die "--gpu: nvidia-smi could not see a GPU inside the container. Check the host's nvidia-container-toolkit, then ./teardown.sh and retry."
+  log "  GPU verified — nvidia-smi sees the host GPU inside (CUDA/compute available)."
+fi
+if [ "$HOST_DOCKER" -eq 1 ]; then
+  log "Verifying host-Docker access (daemon reachable + 'user' in the socket group)..."
+  rm -f "$HOSTDOCKER_MARK"
+  # Same existence-marker pattern: only touch the marker if BOTH the host daemon is
+  # reachable AND 'user' is in the socket's group.
+  docker compose exec -d -u 0 "$SERVICE" bash -c '
+    docker version --format "{{.Server.Version}}" >/dev/null 2>&1 || exit 0
+    g="$(getent group "$(stat -c %g /var/run/docker.sock)" | head -1 | cut -d: -f1)"
+    id -nG user | tr " " "\n" | grep -qx "$g" || exit 0
+    : > /home/user/.haggai_hostdocker_ok' >/dev/null 2>&1 || true
+  hd_ok=0; hdl=$(( SECONDS + 30 ))
+  while [ "$SECONDS" -lt "$hdl" ]; do [ -f "$HOSTDOCKER_MARK" ] && { hd_ok=1; break; }; sleep 1; done
+  rm -f "$HOSTDOCKER_MARK"
+  [ "$hd_ok" -eq 1 ] \
+    || die "--host-docker: the container could not reach the host Docker daemon, or 'user' lacks socket access. Run ./teardown.sh and retry."
+  log "  host Docker reachable from the container, and 'user' can use it without sudo."
+fi
 
 # ---- set the RustDesk permanent password -----------------------------------
 # How `rustdesk --password` works here (verified against the 1.4.7 source AND by
@@ -286,3 +377,11 @@ cat <<EOF
      docker compose stop|start      pause / resume (keeps EVERYTHING)
 ============================================================================
 EOF
+
+# Optional-mode notes (printed only when the corresponding flag was given).
+if [ "$GPU" -eq 1 ] || [ "$HOST_DOCKER" -eq 1 ]; then
+  echo "  Enabled optional modes:"
+  [ "$GPU" -eq 1 ]         && echo "     * --gpu:         host NVIDIA GPU is available inside for CUDA/compute (graphics on CPU)."
+  [ "$HOST_DOCKER" -eq 1 ] && echo "     * --host-docker: 'docker ...' inside the desktop drives the HOST's Docker (root-equivalent)."
+  echo "============================================================================"
+fi
