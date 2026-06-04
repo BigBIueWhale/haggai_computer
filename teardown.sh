@@ -8,8 +8,9 @@
 #                            KEPT, and the built image is kept (fast re-setup).
 #
 #   ./teardown.sh --purge    All of the above, PLUS permanently delete ./home
-#                            (ALL of Haggai's files). Irreversible. Requires
-#                            typing DELETE to confirm.
+#                            (ALL of Haggai's files). Irreversible and immediate:
+#                            the explicit --purge flag IS the confirmation — there is
+#                            no interactive prompt to hang on.
 #
 # Normal reboots/restarts do NOT need this — the container is persistent and comes
 # back on its own (see README "Persistence"). This is only for a deliberate reset.
@@ -35,8 +36,8 @@ Usage: ./teardown.sh [--purge]
 
   (no args)   Stop + remove the container. Discards Haggai's installed packages /
               system changes, but KEEPS ./home and the built image.
-  --purge     Also permanently delete ./home (ALL of Haggai's files). Irreversible;
-              requires typing DELETE.
+  --purge     Also permanently delete ./home (ALL of Haggai's files). Irreversible
+              and immediate — no prompt; the flag itself is the confirmation.
 EOF
     exit 2 ;;
 esac
@@ -45,15 +46,6 @@ command -v docker >/dev/null 2>&1            || die "docker not found on PATH"
 docker compose version >/dev/null 2>&1       || die "the Docker Compose v2 plugin is required"
 [ -f "$SCRIPT_DIR/docker-compose.yml" ]      || die "docker-compose.yml not found next to teardown.sh"
 cd "$SCRIPT_DIR"
-
-if [ "$PURGE" -eq 1 ]; then
-  warn "PURGE will remove the container AND permanently delete every file under"
-  warn "    $HOME_DIR"
-  warn "This cannot be undone."
-  printf 'Type exactly DELETE to proceed: '
-  read -r reply
-  [ "$reply" = "DELETE" ] || die "not confirmed (you typed '${reply}') — nothing was changed"
-fi
 
 # Remove the container (+ compose network). Idempotent: a no-op if already gone.
 if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
@@ -65,13 +57,16 @@ docker compose down --remove-orphans
 
 if [ "$PURGE" -eq 1 ]; then
   if [ -d "$HOME_DIR" ]; then
-    # Delete as root inside a throwaway container so that any root-owned files
-    # Haggai created via `sudo` are also removed. The ./home directory itself — and
-    # its tracked .gitkeep placeholder — are preserved (./home is the bind-mount
-    # target for the next ./setup.sh; keeping .gitkeep keeps the git tree clean).
-    log "Deleting all contents of ./home (as root, to catch root-owned files)..."
+    # Delete as root inside a throwaway container so any root-owned files Haggai
+    # created via `sudo` are also removed — NO host-side `sudo` needed; the container
+    # supplies root via the daemon, which is exactly why the operator never has to.
+    # We spare ONLY the top-level placeholder, matched by exact PATH (not by name):
+    # `! -name .gitkeep` would also spare placeholder files apps create deep in the
+    # tree (e.g. a Codex plugin's own .gitkeep), leaving their parent dirs non-empty
+    # and failing the whole delete. ./home itself is the bind-mount target and kept.
+    log "PURGE: permanently deleting every file under ./home (irreversible)..."
     docker run --rm -v "$HOME_DIR":/purge "$BASE_IMAGE" \
-      find /purge -mindepth 1 ! -name .gitkeep -delete
+      find /purge -mindepth 1 ! -path /purge/.gitkeep -delete
   fi
   log "Purge complete. ./home is empty. Re-create with: ./setup.sh <password>"
   log "(The built image was kept for a fast rebuild. To reclaim its disk space:"
