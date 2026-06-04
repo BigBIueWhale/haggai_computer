@@ -22,9 +22,10 @@ SERVICE=haggai_computer
 HOST_PORT=21128
 MIN_PW_LEN=12
 HEALTH_TIMEOUT=300        # seconds to wait for the container to become healthy
-IPC_ATTEMPTS=20           # rustdesk --password tries (waits out IPC readiness)
+PW_TIMEOUT=420            # total seconds to retry the password set — long enough to
+                          #   outlast the --server's cold-start (config-sync) window
 IPC_SLEEP=3               # seconds between tries
-EXEC_TIMEOUT=30           # hard cap on each rustdesk exec (guards against a hang)
+EXEC_TIMEOUT=30           # hard cap on each rustdesk exec
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -100,55 +101,57 @@ done
 log "Container is healthy."
 
 # ---- set the RustDesk permanent password -----------------------------------
-# How `rustdesk --password` works here (verified against the 1.4.7 source):
+# How `rustdesk --password` works here (verified against the 1.4.7 source AND by
+# inspecting a live container):
 #   * run as root (-u 0) with the binary "installed" (under /usr) so core_main
 #     enables the UserMainIpcScope guard for this management command;
 #   * 1.4.7 IPC sockets are uid-scoped (/tmp/<App>-<uid>/ipc). Root does NOT use a
-#     fixed path: it scans /proc for the running `--server`, takes its uid (1000),
-#     and connects to /tmp/<App>-1000/ipc — reaching it via DAC_OVERRIDE (a default
-#     Docker capability; one reason cap_drop:ALL is not used). HOME/XDG are
-#     irrelevant to this path, so we don't set them (root keeps its own /root).
-#   * the server (uid 1000) persists the encrypted password into
-#     /home/user/.config/rustdesk/RustDesk.toml AS `user`, then ACKs -> "Done!".
-# REQUIRES the --server already running and /proc-discoverable — the health wait
-# above guarantees that. DISPLAY is set in case the Flutter binary spins up the UI
-# before handling the flag. The password is passed via an inherited env var,
-# expanded INSIDE the container (single-quoted bash -c), so it never hits host argv.
-log "Setting the RustDesk permanent password (IPC to the running server)..."
+#     fixed path: it scans /proc for the running `--server` (reading /proc/<pid>/exe
+#     across uids needs CAP_SYS_PTRACE — added in compose), takes its uid (1000),
+#     and connects to /tmp/RustDesk-1000/ipc (reached via the default DAC_OVERRIDE
+#     capability — one reason cap_drop:ALL is not used);
+#   * the server (uid 1000) then persists the encrypted password into
+#     /home/user/.config/rustdesk/RustDesk.toml AS `user`. That file is the ONLY
+#     authoritative success signal, and we read it back to confirm.
+# THE CRITICAL GOTCHA: after setting the password the 1.4.7 Flutter binary prints
+# "Done!" and then NEVER EXITS — `rustdesk --password` blocks forever. So a
+# foreground `docker compose exec` running it never returns, and `timeout` cannot
+# rescue it either: a SIGTERM to the compose client does not tear down the
+# in-container exec session, so the whole call wedges indefinitely (observed: a
+# `timeout 30` still alive after 90 minutes). The fix is to NEVER wait on it — fire
+# it DETACHED (`docker compose exec -d`, which returns the instant the process is
+# launched), then poll RustDesk.toml for the password. We reap-then-refire each
+# round so at most one stuck client ever exists, and keep going up to PW_TIMEOUT in
+# case the server's IPC is not ready on the first attempt. Every *blocking* exec is
+# time-boxed so setup can never wedge again. DISPLAY is set because the Flutter
+# binary may touch the UI; the password is passed via an inherited env var, expanded
+# INSIDE the container (single-quoted bash -c) so it never reaches host argv. (A
+# clean ./home — run `./teardown.sh --purge` before re-deploying — makes a non-empty
+# password unambiguously mean THIS run set it.)
+log "Setting the RustDesk permanent password..."
 export RD_PASSWORD="$PASSWORD"
 rd_ok=0
-rd_out=""
-for _ in $(seq 1 "$IPC_ATTEMPTS"); do
-  rd_out="$(timeout "$EXEC_TIMEOUT" docker compose exec -T -u 0 \
-              -e RD_PASSWORD \
-              -e DISPLAY=:99 \
-              "$SERVICE" \
-              bash -c 'rustdesk --password "$RD_PASSWORD"' 2>&1 || true)"
-  if printf '%s' "$rd_out" | grep -q 'Done!'; then
+pw_deadline=$(( SECONDS + PW_TIMEOUT ))
+while [ "$SECONDS" -lt "$pw_deadline" ]; do
+  # Reap any previous (deliberately) stuck attempt so at most one ever exists...
+  timeout "$EXEC_TIMEOUT" docker compose exec -T -u 0 "$SERVICE" \
+    pkill -f 'rustdesk --password' >/dev/null 2>&1 || true
+  # ...then fire a fresh one DETACHED so we never block on the call that won't return.
+  docker compose exec -d -u 0 -e RD_PASSWORD -e DISPLAY=:99 "$SERVICE" \
+    bash -c 'rustdesk --password "$RD_PASSWORD"' >/dev/null 2>&1 || true
+  sleep "$IPC_SLEEP"
+  if timeout "$EXEC_TIMEOUT" docker compose exec -T -u 0 "$SERVICE" \
+       bash -c "grep -Eq \"^password = '.+'\" /home/user/.config/rustdesk/RustDesk.toml" 2>/dev/null; then
     rd_ok=1
     break
   fi
-  sleep "$IPC_SLEEP"
 done
+# Final reap: the successful attempt's client is, by design, still stuck — kill it.
+timeout "$EXEC_TIMEOUT" docker compose exec -T -u 0 "$SERVICE" \
+  pkill -f 'rustdesk --password' >/dev/null 2>&1 || true
 unset RD_PASSWORD
-if [ "$rd_ok" -ne 1 ]; then
-  printf '%s\n' "$rd_out" >&2
-  die "RustDesk did not accept the permanent password (expected 'Done!'). Output above."
-fi
-
-# read-back assertion: the server actually persisted an (encrypted) permanent
-# password into the user's RustDesk.toml. The short retry absorbs the async IPC
-# write (the '--password' client may print 'Done!' just before the server stores).
-rb_ok=0
-for _ in $(seq 1 10); do
-  if docker compose exec -T -u 0 "$SERVICE" \
-       bash -c "grep -Eq \"^password = '.+'\" /home/user/.config/rustdesk/RustDesk.toml" 2>/dev/null; then
-    rb_ok=1
-    break
-  fi
-  sleep 1
-done
-[ "$rb_ok" -eq 1 ] || die "RustDesk password read-back failed — no password persisted in RustDesk.toml"
+[ "$rd_ok" -eq 1 ] \
+  || die "RustDesk password was not persisted to RustDesk.toml within ${PW_TIMEOUT}s (is --server up?)."
 log "RustDesk permanent password set and verified."
 
 # ---- set the 'user' Linux / sudo password to the SAME value ----------------

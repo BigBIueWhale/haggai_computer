@@ -86,9 +86,12 @@ allow-list, no ephemeral-range exception — unlike the host's own RustDesk.
 - the `user` **Linux/sudo password**.
 
 So whoever can RustDesk in can also `sudo`. That is intentional — it's Haggai's own
-machine. Pick a strong one (the script enforces ≥ 12 chars). It is never stored in
-this repo; it is applied at deploy time and asserted (RustDesk: `--password` →
-`Done!` + read-back of `RustDesk.toml`; Linux: `chpasswd` + `passwd -S` → `P`).
+machine. Because port 21128 faces the public internet (DMZ, static IP, no firewall),
+pick a STRONG one — long and random, not a guessable word/phrase. The script enforces
+only a ≥ 12-char floor; that is a minimum, not a recommendation. It is never stored in
+this repo; it is applied at deploy time and asserted (RustDesk: `--password` fired
+detached — the 1.4.7 CLI sets the password over IPC and then never exits — then
+confirmed by reading it back from `RustDesk.toml`; Linux: `chpasswd` + `passwd -S` → `P`).
 
 ---
 
