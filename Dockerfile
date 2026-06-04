@@ -1060,6 +1060,18 @@ RUN apt-get update && apt-get install -y \
     pulseaudio \
     && rm -rf /var/lib/apt/lists/*
 
+# Disable two XFCE autostarts that are wrong for a HEADLESS, RustDesk-streamed
+# desktop: xscreensaver would blank the captured framebuffer, and light-locker would
+# lock the session (a remote lock-out risk). Marking them Hidden=true makes
+# xfce4-session ignore them; the binaries stay installed, this only stops autostart.
+RUN set -e; for f in xscreensaver light-locker; do \
+      d="/etc/xdg/autostart/$f.desktop"; \
+      if [ -f "$d" ]; then \
+        printf '\n# Disabled for haggai_computer (headless): no screen to blank or lock.\nHidden=true\n' >> "$d"; \
+        echo "disabled autostart: $d"; \
+      fi; \
+    done
+
 # RustDesk client, pinned to 1.4.7 and SHA-256-verified. 1.4.7 (newer than the
 # host's personal_server 1.4.6 pin) is chosen deliberately for its headless-Linux
 # OS-password anti-brute-force hardening (#14985, #14682), the password-encryption

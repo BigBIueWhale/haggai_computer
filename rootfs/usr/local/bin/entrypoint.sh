@@ -26,6 +26,13 @@ command -v supervisord >/dev/null 2>&1 || die "supervisord missing from image"
 # 1) Per-user XDG runtime dir (D-Bus session, PulseAudio, RustDesk IPC socket).
 install -d -m 0700 -o "$USER_UID" -g "$USER_GID" "$RUNTIME_DIR"
 
+# 1b) X11/ICE socket dirs. Xvfb runs as the unprivileged user and cannot create
+#     /tmp/.X11-unix itself (it logs "euid != 0, ... will not be created" and falls
+#     back to the abstract socket only). Pre-create them sticky + world-writable, as
+#     root, so the standard filesystem X sockets exist. (/tmp is the container's
+#     writable layer, so this is re-asserted, idempotently, on every (re)start.)
+install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix
+
 # 2) Ensure the (bind-mounted) home itself is owned by the user. Non-recursive on
 #    purpose: never rewrite ownership/perms of Haggai's own files underneath.
 install -d -o "$USER_UID" -g "$USER_GID" "$USER_HOME"
