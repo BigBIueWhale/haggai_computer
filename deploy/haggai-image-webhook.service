@@ -1,0 +1,17 @@
+[Unit]
+Description=Haggai immutable image deployment webhook
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/lib/haggai/haggai_image_webhook.py --config /etc/haggai/deployer.toml serve
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

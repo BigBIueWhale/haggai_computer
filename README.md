@@ -38,6 +38,12 @@ Linux/sudo login. The first build is **large and slow by design** (full toolchai
 Ghidra + PyTorch + RustDesk + desktop) — let it run; it prints the connect string
 when it finishes.
 
+For Cloud Run-style updates from a registry image, use the host-side immutable
+image deployer instead of the local build flow. The host keeps a root-owned config
+pointing at one trusted image repository, and GitHub Actions can trigger deployment
+of a new digest through an authenticated `POST /deploy` webhook. See
+[`docs/IMAGE_UPDATES.md`](docs/IMAGE_UPDATES.md).
+
 > ⚠️ Each desktop publishes **one** internet-reachable port (this one:
 > `0.0.0.0:21128/tcp`) on your DMZ'd box. Add that port to the allow-list in
 > [`docs/SECURITY.md`](docs/SECURITY.md) so `verify_network_security.py` stays green.

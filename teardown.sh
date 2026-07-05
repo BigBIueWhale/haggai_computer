@@ -55,6 +55,15 @@ fi
 log "docker compose down ..."
 docker compose down --remove-orphans
 
+# The immutable-image webhook deployer creates the same named desktop container
+# directly with `docker run` instead of Compose. Keep teardown authoritative for
+# both deployment paths: after Compose has removed anything it owns, remove a
+# remaining container with the configured name.
+if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
+  warn "Container '$CONTAINER' still exists after compose down; removing it by name."
+  docker rm -f "$CONTAINER" >/dev/null
+fi
+
 if [ "$PURGE" -eq 1 ]; then
   if [ -d "$HOME_DIR" ]; then
     # Delete as root inside a throwaway container so any root-owned files Haggai
