@@ -179,30 +179,30 @@ docker compose build || die "image build failed (see output above)"
 log "Starting the container..."
 docker compose up -d || die "'docker compose up -d' failed (see output above)"
 
-# ---- wait until healthy (RustDesk Direct-IP listener is up on :21118) -------
-# Fail FAST on an exited/dead container instead of waiting out the whole timeout.
-log "Waiting for the RustDesk listener to come up (container health)..."
+# ---- wait until the container is RUNNING (fail fast if it dies) -------------
+# IMPORTANT ORDERING (hardened fork): we do NOT wait for "healthy" here. The
+# healthcheck is "the Direct-IP listener :21118 is bound", but on the fork the
+# --server REFUSES to bind :21118 until a permanent password is set
+# (R-A4/R-S9, fail-closed). So health can only go green AFTER the password step
+# below — waiting for it first is a deadlock (health needs the password; the
+# password step needs the server's IPC, which only needs the container running).
+# We therefore wait for RUNNING now and for HEALTHY *after* provisioning.
+log "Waiting for the container to come up..."
 start=$SECONDS
 while :; do
-  info="$(docker inspect -f '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CONTAINER" 2>/dev/null || true)"
-  cstatus="${info%%|*}"; hstatus="${info##*|}"
-  [ -n "$cstatus" ] || { docker compose logs --tail=120 || true; die "container '$CONTAINER' disappeared"; }
+  cstatus="$(container_status)"
   case "$cstatus" in
-    running) ;;
-    *) docker compose logs --tail=120 || true; die "container is '$cstatus' (not running) — see logs above" ;;
+    running) break ;;
+    "")      docker compose logs --tail=120 || true; die "container '$CONTAINER' disappeared" ;;
+    *)       docker compose logs --tail=120 || true; die "container is '$cstatus' (not running) — see logs above" ;;
   esac
-  case "$hstatus" in
-    healthy)   break ;;
-    unhealthy) docker compose logs --tail=120 || true; die "container became unhealthy — see logs above" ;;
-    *)         ;;   # starting / none → keep waiting
-  esac
-  if [ $(( SECONDS - start )) -ge "$HEALTH_TIMEOUT" ]; then
+  if [ $(( SECONDS - start )) -ge 60 ]; then
     docker compose logs --tail=120 || true
-    die "timed out after ${HEALTH_TIMEOUT}s waiting for 'healthy' (status: ${cstatus}/${hstatus})"
+    die "timed out after 60s waiting for the container to reach 'running' (status: ${cstatus})"
   fi
-  sleep 3
+  sleep 2
 done
-log "Container is healthy."
+log "Container is running."
 
 # ---- verify the optional modes actually took effect (detached exec -> host marker) ---
 # Same no-foreground-exec rule as the passwords: a detached exec writes a marker into
@@ -242,26 +242,24 @@ if [ "$DEV" -eq 1 ]; then
 fi
 
 # ---- set the RustDesk permanent password -----------------------------------
-# How `rustdesk --password` works here (verified against the 1.4.7 source AND by
-# inspecting a live container):
-#   * run as root (-u 0) with the binary "installed" (under /usr) so core_main
-#     enables the UserMainIpcScope guard for this management command;
-#   * 1.4.7 IPC sockets are uid-scoped (/tmp/<App>-<uid>/ipc). Root scans /proc for
-#     the running `--server` (reading /proc/<pid>/exe across uids needs
-#     CAP_SYS_PTRACE — added in compose), takes its uid (1000), and connects to
-#     /tmp/RustDesk-1000/ipc (reached via the default DAC_OVERRIDE capability);
-#   * the server (uid 1000) then persists the encrypted password into RustDesk.toml.
-# THE GOTCHA + THE RULE: `rustdesk --password` sets the password over IPC then leaves
-# a process holding its stdio open and never returns; and (worse) a FOREGROUND
-# `docker compose exec` here can wedge for that same reason even running a trivial
-# grep, with `timeout` unable to kill it. So: NO foreground exec. The set runs
-# DETACHED (`-d`); the read-back does not exec at all — ./home is bind-mounted, so we
-# grep $RD_TOML directly on the host (host is uid 1000, the file's owner). We re-fire
-# on an interval (never killing an in-flight attempt) and check container liveness
-# each poll so a dead container fails fast instead of waiting out the timeout.
-# DISPLAY is set because the binary may touch the UI; the password rides an inherited
-# env var, expanded INSIDE the container (single-quoted bash -c) so it never reaches
-# host argv.
+# How `rustdesk --password` works ON THE FORK (verified against the fork source):
+#   * run as `user` (-u user, uid 1000) — the SAME uid as the `--server`. The fork
+#     (R-D2) makes `--password` REACHABLE-OWN-IPC: the service account sets its own
+#     credential over its own uid-scoped socket (/tmp/RustDesk-1000/ipc). No root, no
+#     /proc scan, no CAP_SYS_PTRACE (dropped in compose) — a least-privilege win over
+#     upstream, whose root `--password` needed PTRACE to find the server across uids.
+#   * the server (uid 1000) persists the credential into RustDesk.toml. On the fork
+#     that credential is the memory-hard Argon2id CPace PRS (R-P1/R-S9), stored both
+#     as `password_prs` (the live PRS) AND `password` (the PRS in the legacy
+#     hashed-storage envelope, kept deliberately so the "is-set"/load machinery is
+#     untouched) — so the host-side `^password = '.+'` read-back below still works.
+# THE RULE (kept from upstream, still prudent): NO foreground exec — the set runs
+# DETACHED (`-d`) and the read-back greps $RD_TOML directly on the bind-mounted host
+# side (uid 1000, the owner), re-firing on an interval and checking container liveness
+# each poll. The fork's `--password` is a clean set-and-exit (R-D2), so the loop
+# typically fires once; the detached form + pkill cleanup stay as belt-and-suspenders.
+# DISPLAY is set defensively; the password rides an inherited env var expanded INSIDE
+# the container (single-quoted bash -c) so it never reaches host argv.
 log "Setting the RustDesk permanent password..."
 export RD_PASSWORD="$PASSWORD"
 
@@ -285,7 +283,7 @@ last_fire=$(( SECONDS - PW_REFIRE ))      # make the first iteration fire immedi
 while [ "$SECONDS" -lt "$pw_deadline" ]; do
   assert_container_running
   if [ $(( SECONDS - last_fire )) -ge "$PW_REFIRE" ]; then
-    docker compose exec -d -u 0 -e RD_PASSWORD -e DISPLAY=:99 "$SERVICE" \
+    docker compose exec -d -u user -e RD_PASSWORD -e DISPLAY=:99 "$SERVICE" \
       bash -c 'rustdesk --password "$RD_PASSWORD"' >/dev/null 2>&1 || true
     last_fire=$SECONDS
   fi
@@ -307,8 +305,35 @@ if [ "$rd_ok" -ne 1 ]; then
 fi
 # Clean up the detached client(s) — DETACHED (pkill excludes its own pid), so it
 # returns at once and killing the stuck Flutter process can't wedge the host.
-docker compose exec -d -u 0 "$SERVICE" pkill -f 'rustdesk --password' >/dev/null 2>&1 || true
+docker compose exec -d -u user "$SERVICE" pkill -f 'rustdesk --password' >/dev/null 2>&1 || true
 log "RustDesk permanent password set and verified."
+
+# ---- NOW wait until healthy (the Direct-IP listener :21118 is finally up) ---
+# With the permanent password persisted above, the fork's --server passes its
+# R-A4 startup invariants and binds :21118 — so health can finally go green.
+# (Healthcheck: `ss -ltn | grep :21118`.) Fail FAST on an exited/dead container.
+log "Waiting for the RustDesk listener to come up (container health)..."
+start=$SECONDS
+while :; do
+  info="$(docker inspect -f '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CONTAINER" 2>/dev/null || true)"
+  cstatus="${info%%|*}"; hstatus="${info##*|}"
+  [ -n "$cstatus" ] || { docker compose logs --tail=120 || true; die "container '$CONTAINER' disappeared"; }
+  case "$cstatus" in
+    running) ;;
+    *) docker compose logs --tail=120 || true; die "container is '$cstatus' (not running) — see logs above" ;;
+  esac
+  case "$hstatus" in
+    healthy)   break ;;
+    unhealthy) docker compose logs --tail=120 || true; die "container became unhealthy — see logs above" ;;
+    *)         ;;   # starting / none → keep waiting
+  esac
+  if [ $(( SECONDS - start )) -ge "$HEALTH_TIMEOUT" ]; then
+    docker compose logs --tail=120 || true
+    die "timed out after ${HEALTH_TIMEOUT}s waiting for 'healthy' (status: ${cstatus}/${hstatus})"
+  fi
+  sleep 3
+done
+log "Container is healthy."
 
 # ---- set the 'user' Linux / sudo password to the SAME value ----------------
 # /etc/shadow is in the container's writable layer (NOT bind-mounted), so this must
@@ -352,15 +377,29 @@ log "Final checks passed: running + healthy, RustDesk password present, ${HOST_P
 LAN_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
 [ -n "${LAN_IP:-}" ] || LAN_IP="<this-box-LAN-ip>"
 
+# Pure password-PAKE fork: there is NO host-key fingerprint to pin (the R-S17 host-key
+# subsystem was retired — CPace over the permanent password is the sole authenticator).
+# The viewer connects with just <address> + password; nothing per-box to verify out-of-band.
+# (No `rustdesk --get-fingerprint` — that CLI arm is gone; running it here would wedge the exec.)
+
 cat <<EOF
 
 ============================================================================
-  haggai_computer is up, healthy, and provisioned.
+  haggai_computer is up, healthy, and provisioned  (HARDENED FORK build).
 ============================================================================
 
-  Connect with the RustDesk app (Android or desktop) -> "Direct IP Access":
+  IMPORTANT — this is the hardened fork, not upstream RustDesk. It authenticates
+  with a mandatory CPace PAKE, so the STOCK RustDesk app will NOT connect. Use the
+  FORK's client (built from the rustdesk_fork repo): Android .apk / Windows .exe /
+  Linux .deb. Then "Direct IP Access":
         <YOUR-PUBLIC-IP>:${HOST_PORT}
      (on the LAN you can test with   ${LAN_IP}:${HOST_PORT} )
+
+  CONNECT — no fingerprint to verify. This is the pure password-PAKE fork (the host-key
+  pin was retired): the mutual CPace handshake over the permanent password IS the
+  authentication, and it defeats an active MITM by construction — a party that does not
+  know the password cannot key. Just enter the address above and the password; there is
+  no first-connect host-key prompt.
 
   Password (BOTH RustDesk access AND the 'user' sudo login): the one you set.
 

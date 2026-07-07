@@ -27,6 +27,24 @@ services:
     ports:
       - "21128:21118/tcp"
 
+    # --- Network namespace: legacy default bridge (NOT a compose user-defined net) ---
+    # The fork's R-A4 socket-surface self-check (src/direct_service.rs ->
+    # hbb_common::socket_surface) REFUSES TO SERVE unless the --server's network
+    # namespace holds EXACTLY one TCP listener (the pinned :21118) and ZERO UDP
+    # sockets of any kind — its documented contract is "the box is the sole network
+    # service in its namespace". A compose USER-DEFINED network runs Docker's
+    # embedded DNS resolver at 127.0.0.11 (both a TCP and a UDP socket in this very
+    # netns); that trips the assertion ("socket-surface violation — expected exactly
+    # 1 TCP listener, found 2 ... [21118, <dns-port>]") and crash-loops the server
+    # forever. The LEGACY `bridge` network has NO embedded resolver (it copies the
+    # host's nameservers straight into resolv.conf), so the netns holds only the
+    # :21118 listener and zero persistent UDP — exactly the surface R-A4 expects.
+    # Port publishing (21128->21118) and outbound DNS both still work on it.
+    # Trade-off: containers on the default bridge are not name-isolated from each
+    # other, but this is the sole container here and every inbound connection is
+    # still CPace-PAKE-gated (R-P14) — so isolation rests on the PAKE, not the net.
+    network_mode: "bridge"
+
     # --- Isolation -----------------------------------------------------------
     # The persistent, isolated home is the ONLY part of the host the container can
     # see. Haggai cannot reach your files, your RustDesk/SSH/TeamViewer creds, or
@@ -56,16 +74,12 @@ services:
     # default Docker capability set + the structural limits above are the
     # isolation boundary. See docs/SECURITY.md for the full rationale.
     #
-    # ONE capability is added: SYS_PTRACE. RustDesk 1.4.7's root `rustdesk
-    # --password` finds the user `--server` by reading its /proc/<pid>/exe, which
-    # Docker's default caps forbid across uids; without it, password provisioning
-    # fails ("No --server process found"). SYS_PTRACE only lets root introspect
-    # other processes INSIDE this container; it is NOT a breakout primitive like
-    # SYS_ADMIN — which we evaluated (for a full systemd/logind container) and
-    # REJECTED, since SYS_ADMIN + apparmor=unconfined would gut the posture on this
-    # DMZ box. See docs/SECURITY.md §4.
-    cap_add:
-      - SYS_PTRACE
+    # NO extra capabilities. Upstream 1.4.7 needed CAP_SYS_PTRACE so the ROOT
+    # `rustdesk --password` could scan /proc to find the user `--server`. THE FORK
+    # ELIMINATES THAT (R-D2): `--password` is reachable-own-IPC, so setup.sh runs it
+    # as `user` (uid 1000) against its own uid-scoped socket — no /proc scan, no
+    # cross-uid hop, no SYS_PTRACE. Dropping this capability is a strict
+    # least-privilege improvement over the upstream deployment.
     init: true                  # reap zombies (tini as PID 1)
 
     # --- Health --------------------------------------------------------------

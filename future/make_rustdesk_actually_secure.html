@@ -63,6 +63,11 @@
 <body>
 <div class="wrap">
 
+<div class="box fix" style="border-width:2px;margin-top:26px">
+  <span class="tag">Realized · 2026</span>
+  <p style="margin:.4em 0 0"><strong>This stopped being a wish — it shipped.</strong> Every fix argued for below is now implemented in a hardened, direct-IP-only RustDesk fork: a mandatory CPace PAKE over the permanent password as the <em>sole</em> authenticator, a sealed two-key transport, and no rendezvous, relay, auto-updater, or account. It is released as <strong>v1.4.7-hardened.1</strong> — a reproducible, double-build-identical <a href="https://github.com/BigBIueWhale/rustdesk_fork/releases/tag/commit-8179a3bae952">GitHub release (<code>commit-8179a3bae952</code>)</a> — and <strong>this very box now installs it straight from that release, SHA-256-pinned.</strong> The connection is encrypted, the man-in-the-middle is dead by construction, and the root password finally stays home.</p>
+</div>
+
 <header class="h">
   <h1>Make RustDesk Actually Secure</h1>
   <p class="sub">or: how I transmitted my root password across the public internet in cleartext, hundreds of times — and left the line wide enough for a stranger to read my screen <em>and type on it</em> — because a remote-desktop company decided that encrypting the connection was <em>optional</em>, and then locked the bug report.</p>

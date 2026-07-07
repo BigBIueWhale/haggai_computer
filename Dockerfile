@@ -1072,18 +1072,26 @@ RUN set -e; for f in xscreensaver light-locker; do \
       fi; \
     done
 
-# RustDesk client, pinned to 1.4.7 and SHA-256-verified. 1.4.7 (newer than the
-# host's personal_server 1.4.6 pin) is chosen deliberately for its headless-Linux
-# OS-password anti-brute-force hardening (#14985, #14682), the password-encryption
-# refactor (#15073) and symmetric-crypt zero-nonce fix (#15144), and the
-# file-transfer path-traversal fix (#14678) — all directly relevant to an
-# internet-exposed Direct-IP listener. `apt install ./<deb>` resolves Noble's t64
-# transitional aliases (libgtk-3-0 -> libgtk-3-0t64, ...); raw `dpkg -i` would
-# fail on unmet deps. The build aborts on any SHA / package-metadata mismatch.
+# RustDesk — THE HARDENED FORK, not upstream 1.4.7. Instead of upstream's release we
+# download our fork's reproducible (double-build A==B) .deb straight from its published
+# GitHub release, pinned + fail-closed by SHA-256 — the exact release asset for tag
+# commit-8179a3bae952 (fork v1.4.7-hardened.1). The build aborts on any SHA / package-
+# metadata mismatch, so a wrong or tampered asset can never install. The fork keeps
+# Package=rustdesk / Version=1.4.7 (it forks 1.4.7) and installs to
+# /usr/share/rustdesk/rustdesk, so every downstream path/service is unchanged. The fork
+# REPLACES upstream's plaintext direct-IP path with a mandatory CPace PAKE (so it is NOT
+# wire-compatible with the stock RustDesk app — the viewer must be the fork's client
+# too), compile-pins the direct port to 21118, the display server to X11, and the whole
+# security policy (verification-method / approve-mode / access-mode / hwcodec-off), and
+# excises the rendezvous/relay/updater/plugin paths — which makes several of this
+# Dockerfile's workarounds below inert (documented at each). `apt install ./<deb>`
+# resolves Noble's t64 transitional aliases.
 ARG RUSTDESK_VERSION=1.4.7
-ARG RUSTDESK_DEB_SHA256=12f61bb5ceb10a708089903357bd1f98dcb618bd0ea56ec568aaf1713a38070a
-RUN curl -fsSL -o /tmp/rustdesk.deb \
-        "https://github.com/rustdesk/rustdesk/releases/download/${RUSTDESK_VERSION}/rustdesk-${RUSTDESK_VERSION}-x86_64.deb" \
+# The release asset URL and its SHA-256 are ONE pinned identity — to move to a newer
+# fork build, bump both together (the tag in the URL and the hash).
+ARG RUSTDESK_DEB_URL=https://github.com/BigBIueWhale/rustdesk_fork/releases/download/commit-8179a3bae952/rustdesk-x86_64.deb
+ARG RUSTDESK_DEB_SHA256=2c600ffb74ba86eb5c996243d09ee75435c1080c65114d870a4fdcb1f72344bd
+RUN curl -fsSL -o /tmp/rustdesk.deb "${RUSTDESK_DEB_URL}" \
     && echo "${RUSTDESK_DEB_SHA256}  /tmp/rustdesk.deb" | sha256sum --check --status \
     && [ "$(dpkg-deb --field /tmp/rustdesk.deb Package)" = "rustdesk" ] \
     && [ "$(dpkg-deb --field /tmp/rustdesk.deb Version)" = "${RUSTDESK_VERSION}" ] \
