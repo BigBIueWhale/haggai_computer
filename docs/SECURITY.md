@@ -6,20 +6,25 @@ records what this project changes and why.
 
 ---
 
-## 1. The ONE new internet-reachable port — and the audit edit you must apply
+## 1. Internet-reachable ports — and the audit edit you must apply
 
 `docker-compose.yml` publishes:
 
 ```
 0.0.0.0:21128/tcp  ->  container:21118/tcp   (RustDesk Direct IP Access)
+0.0.0.0:3000/tcp   ->  container:3000/tcp    (Next.js / app preview)
+0.0.0.0:5173/tcp   ->  container:5173/tcp    (Vite / app preview)
+0.0.0.0:8080/tcp   ->  container:8080/tcp    (alternate web preview / T3 Code)
+127.0.0.1:3773/tcp ->  container:3773/tcp    (T3 Code local web UI)
 ```
 
-This is the **only** new externally-reachable listener. It is bound to `0.0.0.0`
-(deliberately, so it survives a LAN-IP change) and, because the box is DMZ'd, is
-reachable from the public internet at `<public-ip>:21128`. That is the intended
-**sovereign** path: Haggai's RustDesk app connects straight to your IP — no relay,
-no rustdesk.com, no Cloudflare. On the host it shows up as a `docker-proxy`
-listener.
+RustDesk is bound to `0.0.0.0` deliberately, so it survives a LAN-IP change; because
+the box is DMZ'd, it is reachable from the public internet at `<public-ip>:21128`.
+That is the intended **sovereign** path: Haggai's RustDesk app connects straight to
+your IP — no relay, no rustdesk.com, no Cloudflare. The app-preview ports are also
+explicitly published so web work inside the desktop can be tested from outside the
+container. T3 Code's conventional `3773/tcp` is bound to host loopback only; expose
+it through a TLS reverse proxy or tunnel before sharing it.
 
 Everything else the container does is **outbound only** (Codex API, `git push`,
 `apt`). No new UDP listener; Direct-IP is TCP-only. No host network, no
@@ -33,12 +38,18 @@ EXPECTED_EXTERNAL_TCP_PORTS = {
     22: "OpenSSH Server (sshd)",
     21118: "RustDesk direct IP access",
     21128: "RustDesk (Haggai desktop container, Direct IP)",   # <-- add this line
+    3000: "Haggai desktop web preview (Next.js)",
+    5173: "Haggai desktop web preview (Vite)",
+    8080: "Haggai desktop web preview (alternate/T3 Code)",
 }
 ```
 
-`personal_server/network_security/README.md` (§2 table) — add a row:
+`personal_server/network_security/README.md` (§2 table) — add rows:
 ```
 | **21128** | TCP | `docker-proxy` | RustDesk Direct IP Access into Haggai's isolated `haggai_computer` container (host `0.0.0.0:21128` → container `21118`). |
+| **3000** | TCP | `docker-proxy` | Web preview from Haggai's isolated `haggai_computer` container (host `0.0.0.0:3000` → container `3000`). |
+| **5173** | TCP | `docker-proxy` | Vite/web preview from Haggai's isolated `haggai_computer` container (host `0.0.0.0:5173` → container `5173`). |
+| **8080** | TCP | `docker-proxy` | Alternate web preview / T3 Code from Haggai's isolated `haggai_computer` container (host `0.0.0.0:8080` → container `8080`). |
 ```
 
 After that, `sudo python3 verify_network_security.py` is green again (Section 1's
@@ -67,8 +78,9 @@ is no inbound random-UDP listener anywhere in the code**.
   binary lives under `/usr`). **Both stay in the container's network namespace and
   are NOT published**, so neither reaches the host's external interface.
 
-Net host-external surface from this project = exactly **`21128/tcp`**. No UDP
-allow-list, no ephemeral-range exception — unlike the host's own RustDesk.
+Net host-external surface from this project = exactly **`21128/tcp`**, **`3000/tcp`**,
+**`5173/tcp`**, and **`8080/tcp`**. No UDP allow-list, no ephemeral-range exception —
+unlike the host's own RustDesk.
 
 > **Sovereignty note:** that outbound rendezvous registration means the container
 > *does* phone home to `rs-ny.rustdesk.com` even though your sessions are
@@ -101,8 +113,9 @@ confirmed by reading it back from `RustDesk.toml`; Linux: `chpasswd` + `passwd -
   He **cannot** see your files, your RustDesk/SSH/TeamViewer credentials, or
   anything else on the box.
 - **No `docker.sock`**, **no `--privileged`**, **no host network**, **no NVIDIA**.
-- He cannot open new inbound ports on the host: nothing is published for him beyond
-  `21128`, and he has no access to the Docker daemon.
+- He cannot open arbitrary new inbound ports on the host: only the explicit RustDesk
+  and web-preview ports listed in §1 are published, and he has no access to the
+  Docker daemon.
 - Resource caps (`cpus 8`, `mem 16g`, `pids 4096`) keep him from starving the
   host's own workloads (e.g. your other GPU/compute containers).
 

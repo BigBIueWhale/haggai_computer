@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE: ghcr.io/YOUR-GITHUB-OWNER/haggai-desktop
+  IMAGE: ghcr.io/natanfreeman/haggai_computer
   DESKTOP: haggai_computer
 
 jobs:

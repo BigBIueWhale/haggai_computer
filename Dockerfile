@@ -1039,6 +1039,12 @@ RUN npm install -g opencode-ai@1.1.53
 # sandbox_mode="danger-full-access" and is seeded into ~/.codex by the entrypoint.
 RUN npm install -g @openai/codex
 
+# T3 Code — a web GUI for coding agents. It wraps the already-installed Codex CLI
+# and serves a browser UI; run `t3 --host 0.0.0.0 --port 3773 --no-browser` when
+# you intentionally want it reachable through the published T3 Code port.
+RUN npm install -g t3@0.0.28 \
+    && t3 --version
+
 # ============================================================
 # REMOTE DESKTOP — RustDesk client (Direct IP Access) + X11 desktop
 # ============================================================
@@ -1240,9 +1246,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
 COPY config/RustDesk2.toml      /etc/haggai/skel/rustdesk/RustDesk2.toml
 COPY config/codex/config.toml   /etc/haggai/skel/codex/config.toml
 
-# Only the RustDesk Direct-IP listener is meant to be reachable. This EXPOSE is
-# documentation; docker-compose.yml publishes 0.0.0.0:21128 -> 21118/tcp.
-EXPOSE 21118/tcp
+# Published runtime ports. RustDesk is the remote desktop entrypoint; the web
+# ports are for app previews and T3 Code when explicitly started.
+EXPOSE 21118/tcp 3000/tcp 3773/tcp 5173/tcp 8080/tcp
 
 WORKDIR /home/user
 CMD ["/usr/local/bin/entrypoint.sh"]

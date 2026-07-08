@@ -52,6 +52,15 @@ class ServerConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class PortConfig:
+    host_port: int
+    container_port: int
+    protocol: str
+    host_ip: str | None = None
+    description: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
 class DesktopConfig:
     name: str
     image: str
@@ -61,6 +70,7 @@ class DesktopConfig:
     host_port: int
     container_port: int
     password_file: Path
+    extra_ports: list[PortConfig]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -143,6 +153,52 @@ def _required_path(table: dict[str, Any], key: str, label: str) -> Path:
     return path
 
 
+def _port_number(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise DeployError(f"config value {label} must be an integer")
+    if value < 1 or value > 65535:
+        raise DeployError(f"config value {label} must be between 1 and 65535")
+    return value
+
+
+def _parse_extra_ports(desktop: dict[str, Any]) -> list[PortConfig]:
+    raw_ports = desktop.get("extra_ports", [])
+    if not isinstance(raw_ports, list):
+        raise DeployError("config value desktop.extra_ports must be an array of tables")
+
+    ports: list[PortConfig] = []
+    seen: set[tuple[str | None, int, str]] = set()
+    for index, raw in enumerate(raw_ports, start=1):
+        if not isinstance(raw, dict):
+            raise DeployError(f"desktop.extra_ports[{index}] must be a table")
+        protocol = raw.get("protocol", "tcp")
+        if protocol not in ("tcp", "udp"):
+            raise DeployError(f"desktop.extra_ports[{index}].protocol must be tcp or udp")
+        host_ip = raw.get("host_ip")
+        if host_ip is not None and (not isinstance(host_ip, str) or not host_ip.strip()):
+            raise DeployError(f"desktop.extra_ports[{index}].host_ip must be a non-empty string")
+        description = raw.get("description", "")
+        if not isinstance(description, str):
+            raise DeployError(f"desktop.extra_ports[{index}].description must be a string")
+        port = PortConfig(
+            host_port=_port_number(raw.get("host_port"), f"desktop.extra_ports[{index}].host_port"),
+            container_port=_port_number(
+                raw.get("container_port"), f"desktop.extra_ports[{index}].container_port"
+            ),
+            protocol=protocol,
+            host_ip=host_ip.strip() if host_ip is not None else None,
+            description=description.strip(),
+        )
+        key = (port.host_ip, port.host_port, port.protocol)
+        if key in seen:
+            raise DeployError(
+                f"desktop.extra_ports[{index}] duplicates a previous host port mapping"
+            )
+        seen.add(key)
+        ports.append(port)
+    return ports
+
+
 def load_config(path: Path) -> Config:
     with path.open("rb") as handle:
         raw = tomllib.load(handle)
@@ -190,9 +246,10 @@ def load_config(path: Path) -> Config:
             container_name=container_name.strip(),
             hostname=hostname.strip(),
             home_dir=_required_path(desktop, "home_dir", "desktop"),
-            host_port=_required_int(desktop, "host_port", "desktop"),
+            host_port=_port_number(_required_int(desktop, "host_port", "desktop"), "desktop.host_port"),
             container_port=_optional_int(desktop, "container_port", 21118),
             password_file=_required_path(desktop, "password_file", "desktop"),
+            extra_ports=_parse_extra_ports(desktop),
         ),
         runtime=RuntimeConfig(
             cpus=_optional_str(runtime, "cpus", "8.0"),
@@ -407,6 +464,12 @@ def run_container(config: Config, ref: str, *, digest: str | None) -> None:
         "--health-start-period",
         "90s",
     ]
+    for port in config.desktop.extra_ports:
+        if port.host_ip:
+            spec = f"{port.host_ip}:{port.host_port}:{port.container_port}/{port.protocol}"
+        else:
+            spec = f"{port.host_port}:{port.container_port}/{port.protocol}"
+        args.extend(["-p", spec])
     for key, value in labels.items():
         args.extend(["--label", f"{key}={value}"])
     args.append(ref)

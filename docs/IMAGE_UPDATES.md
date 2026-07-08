@@ -9,7 +9,7 @@ The webhook never gets to choose an arbitrary image. It can only say:
 ```json
 {
   "desktop": "haggai_computer",
-  "image": "ghcr.io/YOUR-GITHUB-OWNER/haggai-desktop",
+  "image": "ghcr.io/natanfreeman/haggai_computer",
   "digest": "sha256:..."
 }
 ```
@@ -23,7 +23,7 @@ Image updates are immutable. The deployer stops and removes the old container,
 then starts a new container from:
 
 ```text
-ghcr.io/YOUR-GITHUB-OWNER/haggai-desktop@sha256:...
+ghcr.io/natanfreeman/haggai_computer@sha256:...
 ```
 
 Only the configured home directory persists:
@@ -131,6 +131,9 @@ X-Haggai-Signature: sha256=<hex hmac>
 
 The host then pulls with the read-only registry token and runs the image by digest,
 never by mutable tag.
+
+The example config also publishes app-preview ports `3000/tcp`, `5173/tcp`, and
+`8080/tcp`, plus T3 Code's `3773/tcp` on host loopback only.
 
 ## Rollback
 

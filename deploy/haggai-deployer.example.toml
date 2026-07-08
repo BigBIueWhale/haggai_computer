@@ -13,7 +13,7 @@ name = "haggai_computer"
 
 # The host-trusted image repository. Do not include a tag or digest here.
 # The webhook may deploy only digests for this exact repository.
-image = "ghcr.io/YOUR-GITHUB-OWNER/haggai-desktop"
+image = "ghcr.io/natanfreeman/haggai_computer"
 
 container_name = "haggai_computer"
 hostname = "haggai-computer"
@@ -26,6 +26,31 @@ container_port = 21118
 # recreate the container and must reprovision /etc/shadow.
 password_file = "/etc/haggai/haggai-password"
 
+[[desktop.extra_ports]]
+host_port = 3000
+container_port = 3000
+protocol = "tcp"
+description = "Next.js development server"
+
+[[desktop.extra_ports]]
+host_port = 5173
+container_port = 5173
+protocol = "tcp"
+description = "Vite development server"
+
+[[desktop.extra_ports]]
+host_port = 8080
+container_port = 8080
+protocol = "tcp"
+description = "alternate web preview / T3 Code with --port 8080"
+
+[[desktop.extra_ports]]
+host_ip = "127.0.0.1"
+host_port = 3773
+container_port = 3773
+protocol = "tcp"
+description = "T3 Code local web UI"
+
 [runtime]
 cpus = "8.0"
 memory = "16g"
@@ -36,7 +61,7 @@ health_timeout_seconds = 300
 
 [registry]
 host = "ghcr.io"
-username = "YOUR-GITHUB-USERNAME"
+username = "NatanFreeman"
 
 # GitHub fine-grained token, GitHub App token, or deploy token equivalent with
 # read-only package access to desktop.image and nothing broader.
