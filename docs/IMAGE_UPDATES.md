@@ -9,7 +9,7 @@ The webhook never gets to choose an arbitrary image. It can only say:
 ```json
 {
   "desktop": "haggai_computer",
-  "image": "ghcr.io/natanfreeman/haggai_computer",
+  "image": "natanfreeman/docker-computer",
   "digest": "sha256:..."
 }
 ```
@@ -23,7 +23,7 @@ Image updates are immutable. The deployer stops and removes the old container,
 then starts a new container from:
 
 ```text
-ghcr.io/natanfreeman/haggai_computer@sha256:...
+natanfreeman/docker-computer@sha256:...
 ```
 
 Only the configured home directory persists:
@@ -57,16 +57,16 @@ Create the three root-owned secret files referenced by the config:
 
 ```bash
 sudo sh -c 'umask 077; printf "%s\n" "THE_DESKTOP_PASSWORD" > /etc/haggai/haggai-password'
-sudo sh -c 'umask 077; printf "%s\n" "GHCR_READONLY_TOKEN" > /etc/haggai/ghcr-readonly-token'
+sudo sh -c 'umask 077; printf "%s\n" "DOCKERHUB_READONLY_TOKEN" > /etc/haggai/dockerhub-readonly-token'
 sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/haggai/webhook-secret'
 ```
 
-The registry token should be read-only for the configured GHCR package/repository.
+The registry token should be read-only for the configured Docker Hub repository.
 Do not use a broad personal token.
 
 ## First Deploy
 
-After your image exists in GHCR, deploy one digest manually:
+After your image exists in Docker Hub, deploy one digest manually:
 
 ```bash
 sudo /usr/local/lib/haggai/haggai_image_webhook.py \
@@ -111,6 +111,8 @@ Copy `deploy/github-actions-deploy.example.yml` into the image repo as:
 Set these GitHub Actions secrets:
 
 ```text
+DOCKERHUB_USERNAME=NatanFreeman
+DOCKERHUB_TOKEN=<Docker Hub access token with write access to natanfreeman/docker-computer>
 HAGGAI_WEBHOOK_URL=https://YOUR-HOST.example.com/deploy
 HAGGAI_WEBHOOK_SECRET=<contents of /etc/haggai/webhook-secret>
 ```

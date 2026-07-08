@@ -218,7 +218,8 @@ def load_config(path: Path) -> Config:
     image = _required_str(desktop, "image", "desktop")
     if "@" in image:
         raise DeployError("desktop.image must be a repository name, not an image@digest reference")
-    if not image.startswith(f"{registry_host}/"):
+    docker_hub_short_name = registry_host == "docker.io" and image.count("/") == 1
+    if not docker_hub_short_name and not image.startswith(f"{registry_host}/"):
         raise DeployError("desktop.image must live under registry.host")
 
     name = _required_str(desktop, "name", "desktop")

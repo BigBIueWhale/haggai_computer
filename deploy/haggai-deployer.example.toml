@@ -13,7 +13,7 @@ name = "haggai_computer"
 
 # The host-trusted image repository. Do not include a tag or digest here.
 # The webhook may deploy only digests for this exact repository.
-image = "ghcr.io/natanfreeman/haggai_computer"
+image = "natanfreeman/docker-computer"
 
 container_name = "haggai_computer"
 hostname = "haggai-computer"
@@ -60,12 +60,11 @@ shm_size = "1g"
 health_timeout_seconds = 300
 
 [registry]
-host = "ghcr.io"
+host = "docker.io"
 username = "NatanFreeman"
 
-# GitHub fine-grained token, GitHub App token, or deploy token equivalent with
-# read-only package access to desktop.image and nothing broader.
-token_file = "/etc/haggai/ghcr-readonly-token"
+# Docker Hub access token with read-only access to desktop.image and nothing broader.
+token_file = "/etc/haggai/dockerhub-readonly-token"
 
 [webhook]
 # Shared secret used by GitHub Actions to HMAC-sign POST /deploy requests.

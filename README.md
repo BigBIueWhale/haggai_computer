@@ -44,10 +44,10 @@ pointing at one trusted image repository, and GitHub Actions can trigger deploym
 of a new digest through an authenticated `POST /deploy` webhook. See
 [`docs/IMAGE_UPDATES.md`](docs/IMAGE_UPDATES.md).
 
-The registry image URL used by the deployer examples is:
+The Docker image name used by the deployer examples is:
 
 ```text
-ghcr.io/natanfreeman/haggai_computer
+natanfreeman/docker-computer
 ```
 
 > ⚠️ Each desktop publishes RustDesk plus explicit web-preview ports on your
