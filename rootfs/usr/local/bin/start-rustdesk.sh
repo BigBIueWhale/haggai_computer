@@ -7,10 +7,9 @@
 # HOME=/home/user so the server reads its options from
 # ~/.config/rustdesk/RustDesk2.toml and persists the permanent password into
 # ~/.config/rustdesk/RustDesk.toml as `user`. XDG_RUNTIME_DIR is the user session
-# dir. (On 1.4.7 the IPC socket is uid-scoped: this server owns
-# /tmp/<App>-1000/ipc, and setup.sh's root `rustdesk --password` finds it by
-# scanning /proc for THIS --server.) Waits for the X server first; fails loud if
-# it never appears.
+# dir. The fork's `rustdesk --password` runs as the same uid and reaches this
+# uid-scoped IPC socket without a root /proc scan. Waits for the X server first;
+# fails loud if it never appears.
 set -euo pipefail
 export DISPLAY=:99
 export HOME=/home/user

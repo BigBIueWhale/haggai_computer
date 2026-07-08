@@ -101,9 +101,9 @@ So whoever can RustDesk in can also `sudo`. That is intentional — it's Haggai'
 machine. Because port 21128 faces the public internet (DMZ, static IP, no firewall),
 pick a STRONG one — long and random, not a guessable word/phrase. The script enforces
 only a ≥ 12-char floor; that is a minimum, not a recommendation. It is never stored in
-this repo; it is applied at deploy time and asserted (RustDesk: `--password` fired
-detached — the 1.4.7 CLI sets the password over IPC and then never exits — then
-confirmed by reading it back from `RustDesk.toml`; Linux: `chpasswd` + `passwd -S` → `P`).
+this repo; it is applied at deploy time and asserted (RustDesk: the fork-native
+`rustdesk --password` runs detached as `user`, then the host confirms `RustDesk.toml`;
+Linux: `chpasswd` + `passwd -S` → `P`).
 
 ---
 
@@ -124,22 +124,18 @@ confirmed by reading it back from `RustDesk.toml`; Linux: `chpasswd` + `passwd -
 ## 4. Capabilities & seccomp
 
 Haggai must be able to run `sudo apt install`, so the container runs with
-**Docker's default capability set + `SYS_PTRACE`**, and **default seccomp + AppArmor
-profiles kept ON**. Two hardening knobs are deliberately NOT used, because each
-would break `sudo`/`apt`:
+**Docker's default capability set**, and **default seccomp + AppArmor profiles kept
+ON**. Two hardening knobs are deliberately NOT used, because each would break
+`sudo`/`apt`:
 
 - **`no-new-privileges` is off** — it blocks `sudo` from elevating at all.
 - **`cap_drop: ALL` is not used** — it would strip `CHOWN`/`SETUID`/`SETGID`/
   `DAC_OVERRIDE` (so `apt`, `dpkg`, `sudo` fail) and `NET_RAW` (so Haggai's own
   `nmap`/`tcpdump`/`ping` fail).
 
-**Why `SYS_PTRACE` is added — and only that.** RustDesk 1.4.7 sets the unattended
-password with a *root* CLI command (`rustdesk --password`) that finds the
-user-owned `--server` by reading its `/proc/<pid>/exe`; reading another uid's
-`/proc/<pid>/exe` needs `CAP_SYS_PTRACE`, which Docker drops by default — so without
-it, provisioning fails ("No --server process found"). `SYS_PTRACE` only lets root
-introspect *other processes inside this container*; it is **not** a breakout
-primitive.
+RustDesk password provisioning does not require an added capability: the fork lets
+`rustdesk --password` run as `user` and reach its own uid-scoped IPC socket directly,
+without a root `/proc` scan or `CAP_SYS_PTRACE`.
 
 **What we evaluated and REJECTED.** We never use `seccomp=unconfined` or add
 `SYS_ADMIN`. Making this a "real" systemd/logind Ubuntu (so `systemctl` works) would

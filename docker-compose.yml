@@ -90,7 +90,7 @@ services:
 
     # --- Health --------------------------------------------------------------
     # "Healthy" == the RustDesk Direct-IP listener is up inside the container.
-    # setup.sh waits on this before setting the password.
+    # setup.sh sets the password first, then waits for this.
     healthcheck:
       test: ["CMD-SHELL", "ss -ltn | grep -q ':21118 '"]
       interval: 10s

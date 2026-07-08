@@ -451,8 +451,6 @@ def run_container(config: Config, ref: str, *, digest: str | None) -> None:
         str(config.runtime.pids_limit),
         "--shm-size",
         config.runtime.shm_size,
-        "--cap-add",
-        "SYS_PTRACE",
         "--init",
         "--health-cmd",
         f"ss -ltn | grep -q ':{config.desktop.container_port} '",
@@ -569,7 +567,7 @@ def provision_passwords(config: Config) -> None:
                     "exec",
                     "-d",
                     "-u",
-                    "0",
+                    "user",
                     "-e",
                     "RD_PASSWORD",
                     "-e",
@@ -599,7 +597,7 @@ def provision_passwords(config: Config) -> None:
             "exec",
             "-d",
             "-u",
-            "0",
+            "user",
             config.desktop.container_name,
             "pkill",
             "-f",
@@ -688,7 +686,6 @@ def deploy_digest(config: Config, digest: str) -> dict[str, Any]:
     remove_container_if_present(config.desktop.container_name)
     try:
         run_container(config, ref, digest=digest)
-        wait_for_health(config)
         provision_passwords(config)
         wait_for_health(config)
         assert_host_port_listening(config)
@@ -699,7 +696,6 @@ def deploy_digest(config: Config, digest: str) -> dict[str, Any]:
             log(f"rolling back to {previous_ref}")
             try:
                 run_container(config, previous_ref, digest=previous_digest)
-                wait_for_health(config)
                 provision_passwords(config)
                 wait_for_health(config)
                 assert_host_port_listening(config)
