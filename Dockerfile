@@ -1082,16 +1082,17 @@ RUN set -e; for f in xscreensaver light-locker; do \
 # download our fork's reproducible (double-build A==B) .deb straight from its published
 # GitHub release, pinned + fail-closed by SHA-256 — the exact release asset for tag
 # commit-8179a3bae952 (fork v1.4.7-hardened.1). The build aborts on any SHA / package-
-# metadata mismatch, so a wrong or tampered asset can never install. The fork keeps
-# Package=rustdesk / Version=1.4.7 (it forks 1.4.7) and installs to
-# /usr/share/rustdesk/rustdesk, so every downstream path/service is unchanged. The fork
-# REPLACES upstream's plaintext direct-IP path with a mandatory CPace PAKE (so it is NOT
-# wire-compatible with the stock RustDesk app — the viewer must be the fork's client
-# too), compile-pins the direct port to 21118, the display server to X11, and the whole
-# security policy (verification-method / approve-mode / access-mode / hwcodec-off), and
-# excises the rendezvous/relay/updater/plugin paths — which makes several of this
-# Dockerfile's workarounds below inert (documented at each). `apt install ./<deb>`
-# resolves Noble's t64 transitional aliases.
+# metadata mismatch, so a wrong or tampered asset can never install; we also grep
+# the installed library for the CPace fork marker so a clean rebuild cannot silently
+# fall back to upstream. The fork keeps Package=rustdesk / Version=1.4.7 (it forks
+# 1.4.7) and installs to /usr/share/rustdesk/rustdesk, so every downstream path/service
+# is unchanged. The fork REPLACES upstream's plaintext direct-IP path with a mandatory
+# CPace PAKE (so it is NOT wire-compatible with the stock RustDesk app — the viewer
+# must be the fork's client too), compile-pins the direct port to 21118, the display
+# server to X11, and the whole security policy (verification-method / approve-mode /
+# access-mode / hwcodec-off), and excises the rendezvous/relay/updater/plugin paths —
+# which makes several of this Dockerfile's workarounds below inert (documented at each).
+# `apt install ./<deb>` resolves Noble's t64 transitional aliases.
 ARG RUSTDESK_VERSION=1.4.7
 # The release asset URL and its SHA-256 are ONE pinned identity — to move to a newer
 # fork build, bump both together (the tag in the URL and the hash).
@@ -1103,7 +1104,8 @@ RUN curl -fsSL -o /tmp/rustdesk.deb "${RUSTDESK_DEB_URL}" \
     && [ "$(dpkg-deb --field /tmp/rustdesk.deb Version)" = "${RUSTDESK_VERSION}" ] \
     && apt-get update && apt-get install -y /tmp/rustdesk.deb \
     && rm -rf /var/lib/apt/lists/* /tmp/rustdesk.deb \
-    && test -x /usr/share/rustdesk/rustdesk
+    && test -x /usr/share/rustdesk/rustdesk \
+    && grep -a -q 'rustdesk-fork/CPace' /usr/share/rustdesk/lib/librustdesk.so
 
 # Force RustDesk's Linux display-server detection to X11. In this container
 # `loginctl` may exist with no login1 session, so RustDesk's get_display_server()

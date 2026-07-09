@@ -60,7 +60,9 @@ natanfreeman/docker-computer
 
 ## How a user connects (phone + computer)
 
-1. Install **RustDesk** (Android: Play Store / official APK; desktop: rustdesk.com).
+1. Install the matching **RustDesk hardened fork** client, not upstream RustDesk.
+   This image pins `1.4.7-hardened.1` from
+   `BigBIueWhale/rustdesk_fork` release `commit-8179a3bae952`.
 2. Use **Direct IP Access** — put
    ```
    <YOUR-PUBLIC-IP>:21128
@@ -123,6 +125,9 @@ with its original explanatory comments kept. Highlights:
 - **Docs/media/OCR:** ffmpeg, imagemagick, pandoc, LibreOffice, tesseract (+ langs),
   Playwright (Chromium+Firefox), and a comprehensive font set.
 - **Editors/CLIs:** vim/neovim/emacs/micro, ripgrep/fd/bat/fzf, git/gh, tmux, etc.
+- **Remote desktop:** **RustDesk hardened fork** `1.4.7-hardened.1`, using the
+  fork's CPace direct-IP protocol. Upstream RustDesk clients are intentionally
+  incompatible.
 - **Desktop GUI apps:** **Firefox**, **Google Chrome**, and **VS Code**, pre-installed
   as real `.deb`s. (Ubuntu 24.04 ships these as *snaps*, and snapd can't run in a
   non-systemd container — so the `.deb` builds are the working path here; `apt install
