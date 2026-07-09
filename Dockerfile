@@ -1175,6 +1175,13 @@ RUN set -e; \
       [ -f "$f" ] && sed -ri 's#^Exec=/usr/share/code/code#Exec=/usr/share/code/code --no-sandbox#' "$f" || true; done; \
     grep -q -- '--no-sandbox' /usr/share/applications/code.desktop
 
+# Small desktop/terminal convenience tools that should be part of the immutable
+# image rather than installed in the container's writable layer.
+RUN apt-get update \
+    && apt-get install -y neofetch \
+    && rm -rf /var/lib/apt/lists/* \
+    && command -v neofetch
+
 # ============================================================
 # OPTIONAL: dev mode — host Docker CLI + the docker-guard wrapper
 # (build arg WITH_DEV, default 0 = OFF)
