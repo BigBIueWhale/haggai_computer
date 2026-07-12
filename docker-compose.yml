@@ -89,7 +89,8 @@ services:
 
     # --- Health --------------------------------------------------------------
     # "Healthy" == the RustDesk Direct-IP listener is up inside the container.
-    # setup.sh waits on this before setting the password.
+    # The fork binds only after setup.sh sets the permanent password, so setup
+    # waits for this healthcheck after password provisioning.
     healthcheck:
       test: ["CMD-SHELL", "ss -ltn | grep -q ':21118 '"]
       interval: 10s
