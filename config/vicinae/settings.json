@@ -1,0 +1,9 @@
+{
+  "$schema": "https://vicinae.com/schemas/config.json",
+  "telemetry": {
+    "system_info": false
+  },
+  "global_shortcuts": {
+    "toggle": "super+space"
+  }
+}

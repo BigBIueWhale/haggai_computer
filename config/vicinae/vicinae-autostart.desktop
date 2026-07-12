@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Vicinae Launcher Service
+Comment=Start the preconfigured Vicinae launcher
+Exec=vicinae server --replace
+Terminal=false
+Icon=vicinae
+OnlyShowIn=KDE;
+NoDisplay=true
+StartupNotify=false
+X-KDE-autostart-after=panel

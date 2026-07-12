@@ -18,10 +18,18 @@ die() { printf '[entrypoint] FATAL: %s\n' "$*" >&2; exit 1; }
 
 # Strict sanity: the image must actually contain what we are about to run.
 [ -x /usr/share/rustdesk/rustdesk ] || die "rustdesk binary missing from image"
+command -v startplasma-x11 >/dev/null 2>&1 || die "KDE Plasma X11 session missing from image"
+command -v ghostty >/dev/null 2>&1 || die "Ghostty missing from image"
+command -v fish >/dev/null 2>&1 || die "Fish missing from image"
+command -v vicinae >/dev/null 2>&1 || die "Vicinae missing from image"
+[ -x /opt/t3-code/t3code ] || die "T3 Code desktop app missing from image"
 command -v supervisord >/dev/null 2>&1 || die "supervisord missing from image"
 [ -f /etc/supervisor/haggai.conf ]   || die "supervisor config missing from image"
 [ -f "$SKEL/rustdesk/RustDesk2.toml" ] || die "RustDesk skel config missing from image"
 [ -f "$SKEL/codex/config.toml" ]       || die "Codex skel config missing from image"
+[ -f "$SKEL/kde/kdeglobals" ]          || die "KDE skel config missing from image"
+[ -f "$SKEL/fish/config.fish" ]        || die "Fish skel config missing from image"
+[ -f "$SKEL/vicinae/settings.json" ]   || die "Vicinae skel config missing from image"
 
 # 1) Per-user XDG runtime dir (D-Bus session, PulseAudio, RustDesk IPC socket).
 install -d -m 0700 -o "$USER_UID" -g "$USER_GID" "$RUNTIME_DIR"
@@ -53,7 +61,7 @@ install -d -o "$USER_UID" -g "$USER_GID" "$USER_HOME"
 chown "$USER_UID:$USER_GID" "$USER_HOME"
 
 # 3) Config dirs the seeds/programs need, owned by the user.
-for d in .config .config/rustdesk .codex; do
+for d in .config .config/rustdesk .config/fish .config/vicinae .codex; do
   install -d -m 0700 -o "$USER_UID" -g "$USER_GID" "$USER_HOME/$d"
 done
 
@@ -70,6 +78,15 @@ seed() {  # seed <src> <dest>   (dest's directory must already exist)
 for f in .bashrc .profile .bash_logout; do
   [ -e "/etc/skel/$f" ] && seed "/etc/skel/$f" "$USER_HOME/$f"
 done
+
+# Fish is the login shell, and KDE/Vicinae defaults must exist before Plasma
+# starts. Seed only absent files so every user customization persists.
+seed "$SKEL/fish/config.fish"              "$USER_HOME/.config/fish/config.fish"
+for f in kdeglobals kscreenlockerrc powermanagementprofilesrc \
+         mimeapps.list xdg-terminals.list; do
+  seed "$SKEL/kde/$f" "$USER_HOME/.config/$f"
+done
+seed "$SKEL/vicinae/settings.json" "$USER_HOME/.config/vicinae/settings.json"
 
 # 5) RustDesk options (direct-server / full access / software codec) and the
 #    Codex in-container sandbox config. Seeded once; Haggai owns them thereafter.

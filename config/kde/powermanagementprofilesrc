@@ -1,0 +1,6 @@
+[AC][DPMSControl]
+idleTime=0
+lockBeforeTurnOff=0
+
+[AC][DimDisplay]
+idleTime=0
