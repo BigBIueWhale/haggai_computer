@@ -1,0 +1,65 @@
+name: Build and deploy desktop image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: natanfreeman/docker-computer
+  DESKTOP: haggai_computer
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:stable
+
+      - name: Notify host
+        env:
+          WEBHOOK_URL: ${{ secrets.HAGGAI_WEBHOOK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.HAGGAI_WEBHOOK_SECRET }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest="${DIGEST#*@}"
+          payload="$(jq -nc \
+            --arg desktop "$DESKTOP" \
+            --arg image "$IMAGE" \
+            --arg digest "$digest" \
+            '{desktop:$desktop,image:$image,digest:$digest}')"
+          ts="$(date +%s)"
+          sig="$(python3 - "$WEBHOOK_SECRET" "$ts" "$payload" <<'PY'
+import hashlib
+import hmac
+import sys
+
+secret, ts, payload = sys.argv[1], sys.argv[2], sys.argv[3]
+msg = ts.encode() + b"." + payload.encode()
+print(hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest())
+PY
+)"
+          curl --fail-with-body \
+            -H "Content-Type: application/json" \
+            -H "X-Haggai-Timestamp: $ts" \
+            -H "X-Haggai-Signature: sha256=$sig" \
+            --data "$payload" \
+            "$WEBHOOK_URL"

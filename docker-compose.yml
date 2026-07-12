@@ -17,15 +17,21 @@ services:
     container_name: haggai_computer
     hostname: haggai-computer
 
-    # --- Sovereign reach -----------------------------------------------------
+    # --- Sovereign reach + web previews --------------------------------------
     # Publish the in-container RustDesk Direct-IP listener (21118) on the host at
     # the single fixed port 21128, on ALL interfaces (0.0.0.0) so it survives any
     # future LAN-IP change. The box is DMZ'd, so this is reachable from the public
     # internet at <public-ip>:21128 — that is the intended sovereign path (no
-    # relay). It is the ONE new internet-reachable port; docs/SECURITY.md carries
-    # the matching verify_network_security.py allow-list edit you must apply.
+    # relay). The web preview ports are intentionally explicit and host-owned:
+    # 3000 (Next.js), 5173 (Vite), and 8080 (alternate preview / T3 Code if run
+    # there). T3 Code's conventional 3773 port is loopback-only on the host; put a
+    # TLS reverse proxy/tunnel in front of it before sharing it.
     ports:
       - "21128:21118/tcp"
+      - "3000:3000/tcp"
+      - "5173:5173/tcp"
+      - "8080:8080/tcp"
+      - "127.0.0.1:3773:3773/tcp"
 
     # --- Network namespace: legacy default bridge (NOT a compose user-defined net) ---
     # The fork's R-A4 socket-surface self-check (src/direct_service.rs ->
@@ -84,7 +90,7 @@ services:
 
     # --- Health --------------------------------------------------------------
     # "Healthy" == the RustDesk Direct-IP listener is up inside the container.
-    # setup.sh waits on this before setting the password.
+    # setup.sh sets the password first, then waits for this.
     healthcheck:
       test: ["CMD-SHELL", "ss -ltn | grep -q ':21118 '"]
       interval: 10s

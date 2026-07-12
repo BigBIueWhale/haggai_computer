@@ -410,9 +410,10 @@ cat <<EOF
      * 'sudo' works with the same password; 'sudo apt install ...' PERSISTS
        across reboots (the whole container is persistent — see README).
 
-  DMZ NOTE: port ${HOST_PORT}/tcp is now reachable from the internet. Apply the
-  one-line allow-list edit in docs/SECURITY.md so verify_network_security.py
-  stays green and your posture stays known.
+  DMZ NOTE: RustDesk port ${HOST_PORT}/tcp plus the explicit web-preview ports
+  documented in docker-compose.yml are now reachable according to their bind
+  addresses. Apply the allow-list edits in docs/SECURITY.md so
+  verify_network_security.py stays green and your posture stays known.
 
   Lifecycle:
      ./teardown.sh                  stop + remove the container (keeps ./home)

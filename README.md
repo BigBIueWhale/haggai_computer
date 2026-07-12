@@ -38,16 +38,31 @@ Linux/sudo login. The first build is **large and slow by design** (full toolchai
 Ghidra + PyTorch + RustDesk + desktop) — let it run; it prints the connect string
 when it finishes.
 
-> ⚠️ Each desktop publishes **one** internet-reachable port (this one:
-> `0.0.0.0:21128/tcp`) on your DMZ'd box. Add that port to the allow-list in
-> [`docs/SECURITY.md`](docs/SECURITY.md) so `verify_network_security.py` stays green.
-> That is the only posture change per desktop.
+For Cloud Run-style updates from a registry image, use the host-side immutable
+image deployer instead of the local build flow. The host keeps a root-owned config
+pointing at one trusted image repository, and GitHub Actions can trigger deployment
+of a new digest through an authenticated `POST /deploy` webhook. See
+[`docs/IMAGE_UPDATES.md`](docs/IMAGE_UPDATES.md).
+
+The Docker image name used by the deployer examples is:
+
+```text
+natanfreeman/docker-computer
+```
+
+> ⚠️ Each desktop publishes RustDesk plus image-declared web-preview ports on your
+> DMZ'd box. This image declares `3000/tcp`, `5173/tcp`, and `8080/tcp` public,
+> while T3 Code's `3773/tcp` is bound to host loopback only by default. Add the
+> public ports to the allow-list in [`docs/SECURITY.md`](docs/SECURITY.md) so
+> `verify_network_security.py` stays green.
 
 ---
 
 ## How a user connects (phone + computer)
 
-1. Install **RustDesk** (Android: Play Store / official APK; desktop: rustdesk.com).
+1. Install the matching **RustDesk hardened fork** client, not upstream RustDesk.
+   This image pins `1.4.7-hardened.1` from
+   `BigBIueWhale/rustdesk_fork` release `commit-8179a3bae952`.
 2. Use **Direct IP Access** — put
    ```
    <YOUR-PUBLIC-IP>:21128
@@ -102,13 +117,17 @@ with its original explanatory comments kept. Highlights:
 
 - **Languages/runtimes:** Python 3 (+ a huge pip stack incl. numpy/pandas/PyTorch
   CPU/transformers), **Node.js 22**, Go, Rust, Ruby, Perl, Lua 5.4, R, Bun, `uv`.
-- **Coding agents:** **OpenAI Codex** (primary) and **OpenCode** (available).
+- **Coding agents:** **OpenAI Codex** (primary), **T3 Code** (`t3@0.0.28`, web GUI
+  for Codex/OpenCode/etc.), and **OpenCode** (available).
 - **Build/embedded:** gcc/g++/clang, cmake/ninja/meson, ARM/aarch64 cross, qemu.
 - **Reverse engineering:** Ghidra, radare2, binwalk, capstone/lief/pefile, 7zz.
 - **Networking/pcap:** nmap, tcpdump, tshark/termshark, scapy, wireshark tooling.
 - **Docs/media/OCR:** ffmpeg, imagemagick, pandoc, LibreOffice, tesseract (+ langs),
   Playwright (Chromium+Firefox), and a comprehensive font set.
 - **Editors/CLIs:** vim/neovim/emacs/micro, ripgrep/fd/bat/fzf, git/gh, tmux, etc.
+- **Remote desktop:** **RustDesk hardened fork** `1.4.7-hardened.1`, using the
+  fork's CPace direct-IP protocol. Upstream RustDesk clients are intentionally
+  incompatible.
 - **Desktop GUI apps:** **Firefox**, **Google Chrome**, and **VS Code**, pre-installed
   as real `.deb`s. (Ubuntu 24.04 ships these as *snaps*, and snapd can't run in a
   non-systemd container — so the `.deb` builds are the working path here; `apt install
@@ -129,19 +148,20 @@ slow build happens once) and the server's CPU/RAM, which the per-desktop caps
 (`cpus 8`, `mem 16g`, `pids 4096`) keep fair.
 
 To add another, give a **fresh copy of this repo** (e.g. another `git clone`, so its
-`./home` starts empty) its own **three** unique values, then run its `setup.sh`:
+`./home` starts empty) its own unique name, port set, and home directory, then run
+its `setup.sh`:
 
 | Make unique per desktop | Where to set it |
 |---|---|
 | **Name** (e.g. `avi_computer`) | `docker-compose.yml`: the `services:` key, `container_name`, `hostname` — **and** `setup.sh`: `CONTAINER`, `SERVICE` |
-| **Host port** (e.g. `21129`) | `docker-compose.yml`: the `ports:` host side — **and** `setup.sh`: `HOST_PORT` |
+| **Host port set** (e.g. RustDesk `21129`, previews `13000`/`15173`/`18080`) | `docker-compose.yml`: every `ports:` host side — **and** `setup.sh`: `HOST_PORT` for RustDesk. Immutable-image deploys read preview ports from the image label `org.haggai.published-ports`. |
 | **Home dir** | `docker-compose.yml`: the `volumes:` host side (keep it inside that desktop's own folder) |
 
 Everything else (the image, the caps, the whole security posture) stays identical.
-Each desktop lands on its own `0.0.0.0:<port>` — add a matching allow-list line in
-`docs/SECURITY.md` per port.
+Each desktop lands on its own explicit port set — add matching allow-list lines in
+`docs/SECURITY.md` for the public ports.
 
-> These three are left **explicit per deployment on purpose** (the project's
+> These values are left **explicit per deployment on purpose** (the project's
 > "specific, not configurable" rule): you should always know exactly who is on which
 > port. There is no hidden multi-tenant launcher to lose track of.
 

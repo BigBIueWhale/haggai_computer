@@ -6,20 +6,28 @@ records what this project changes and why.
 
 ---
 
-## 1. The ONE new internet-reachable port — and the audit edit you must apply
+## 1. Internet-reachable ports — and the audit edit you must apply
 
-`docker-compose.yml` publishes:
+`docker-compose.yml` publishes the static/manual port set. The immutable-image
+deployer publishes RustDesk plus whatever the image declares in
+`org.haggai.published-ports`; this image currently declares the same preview set:
 
 ```
-0.0.0.0:21128/tcp  ->  container:21118/tcp   (RustDesk Direct IP Access)
+0.0.0.0:21128/tcp  ->  container:21118/tcp   (RustDesk hardened fork Direct IP)
+0.0.0.0:3000/tcp   ->  container:3000/tcp    (Next.js / app preview)
+0.0.0.0:5173/tcp   ->  container:5173/tcp    (Vite / app preview)
+0.0.0.0:8080/tcp   ->  container:8080/tcp    (alternate web preview / T3 Code)
+127.0.0.1:3773/tcp ->  container:3773/tcp    (T3 Code local web UI)
 ```
 
-This is the **only** new externally-reachable listener. It is bound to `0.0.0.0`
-(deliberately, so it survives a LAN-IP change) and, because the box is DMZ'd, is
-reachable from the public internet at `<public-ip>:21128`. That is the intended
-**sovereign** path: Haggai's RustDesk app connects straight to your IP — no relay,
-no rustdesk.com, no Cloudflare. On the host it shows up as a `docker-proxy`
-listener.
+RustDesk is bound to `0.0.0.0` deliberately, so it survives a LAN-IP change; because
+the box is DMZ'd, it is reachable from the public internet at `<public-ip>:21128`.
+That is the intended **sovereign** path: Haggai's matching RustDesk hardened fork
+client connects straight to your IP — no relay, no rustdesk.com, no Cloudflare.
+The app-preview ports are declared in the image so a rebuilt image can add or remove
+preview listeners without a host TOML edit. T3 Code's conventional `3773/tcp` is
+bound to host loopback only; expose it through a TLS reverse proxy or tunnel before
+sharing it.
 
 Everything else the container does is **outbound only** (Codex API, `git push`,
 `apt`). No new UDP listener; Direct-IP is TCP-only. No host network, no
@@ -33,12 +41,18 @@ EXPECTED_EXTERNAL_TCP_PORTS = {
     22: "OpenSSH Server (sshd)",
     21118: "RustDesk direct IP access",
     21128: "RustDesk (Haggai desktop container, Direct IP)",   # <-- add this line
+    3000: "Haggai desktop web preview (Next.js)",
+    5173: "Haggai desktop web preview (Vite)",
+    8080: "Haggai desktop web preview (alternate/T3 Code)",
 }
 ```
 
-`personal_server/network_security/README.md` (§2 table) — add a row:
+`personal_server/network_security/README.md` (§2 table) — add rows:
 ```
 | **21128** | TCP | `docker-proxy` | RustDesk Direct IP Access into Haggai's isolated `haggai_computer` container (host `0.0.0.0:21128` → container `21118`). |
+| **3000** | TCP | `docker-proxy` | Web preview from Haggai's isolated `haggai_computer` container (host `0.0.0.0:3000` → container `3000`). |
+| **5173** | TCP | `docker-proxy` | Vite/web preview from Haggai's isolated `haggai_computer` container (host `0.0.0.0:5173` → container `5173`). |
+| **8080** | TCP | `docker-proxy` | Alternate web preview / T3 Code from Haggai's isolated `haggai_computer` container (host `0.0.0.0:8080` → container `8080`). |
 ```
 
 After that, `sudo python3 verify_network_security.py` is green again (Section 1's
@@ -49,32 +63,20 @@ are not applied automatically.
 
 ---
 
-## 1a. RustDesk and UDP — why nothing random reaches your external interface
+## 1a. RustDesk and UDP
 
-Verified against the RustDesk 1.4.7 source: the "random ephemeral UDP port" that
-makes a default-deny UDP firewall impossible for the host's own RustDesk is a
-NAT-traversal / rendezvous artifact, and it is **always an outbound socket — there
-is no inbound random-UDP listener anywhere in the code**.
+This image uses the RustDesk hardened fork, not upstream RustDesk. The fork is
+direct-IP-only: no rendezvous, no relay, no LAN discovery, no UDP listener. The
+server binds exactly one in-container listener:
 
-- Haggai's **Direct IP Access** connection is a plain **TCP** connect to the
-  listener's fixed port (container `21118`, published as `21128`). No UDP, no
-  hole-punching — the host is directly reachable, so there is no NAT to traverse.
-  (`src/client.rs`: a peer that is an IP returns a `"TCP"` connection immediately;
-  the listener is a TCP `listen_any(21118)` in `src/rendezvous_mediator.rs`.)
-- Inside the container, `rustdesk --server` still opens (a) an **outbound**
-  ephemeral-UDP socket to register with `rs-ny.rustdesk.com:21116`, and (b) a
-  **fixed**-port `0.0.0.0:21119/udp` LAN-discovery listener (it opens because the
-  binary lives under `/usr`). **Both stay in the container's network namespace and
-  are NOT published**, so neither reaches the host's external interface.
+```text
+0.0.0.0:21118/tcp
+```
 
-Net host-external surface from this project = exactly **`21128/tcp`**. No UDP
-allow-list, no ephemeral-range exception — unlike the host's own RustDesk.
-
-> **Sovereignty note:** that outbound rendezvous registration means the container
-> *does* phone home to `rs-ny.rustdesk.com` even though your sessions are
-> direct-IP. It is outbound-only and does not affect exposure, but if you want zero
-> contact with RustDesk's infrastructure, block the container's egress to those
-> hosts — the Direct-IP listener keeps working without them.
+That is published by Docker as host `21128/tcp`. With the current image metadata,
+the net host-external surface from this project is **`21128/tcp`**, **`3000/tcp`**,
+**`5173/tcp`**, and **`8080/tcp`**. If the image's `org.haggai.published-ports`
+label changes, update the audit allow-list to match.
 
 ---
 
@@ -89,9 +91,9 @@ So whoever can RustDesk in can also `sudo`. That is intentional — it's Haggai'
 machine. Because port 21128 faces the public internet (DMZ, static IP, no firewall),
 pick a STRONG one — long and random, not a guessable word/phrase. The script enforces
 only a ≥ 12-char floor; that is a minimum, not a recommendation. It is never stored in
-this repo; it is applied at deploy time and asserted (RustDesk: `--password` fired
-detached — the 1.4.7 CLI sets the password over IPC and then never exits — then
-confirmed by reading it back from `RustDesk.toml`; Linux: `chpasswd` + `passwd -S` → `P`).
+this repo; it is applied at deploy time and asserted (RustDesk: the fork-native
+`rustdesk --password` runs detached as `user`, then the host confirms `RustDesk.toml`;
+Linux: `chpasswd` + `passwd -S` → `P`).
 
 ---
 
@@ -101,8 +103,9 @@ confirmed by reading it back from `RustDesk.toml`; Linux: `chpasswd` + `passwd -
   He **cannot** see your files, your RustDesk/SSH/TeamViewer credentials, or
   anything else on the box.
 - **No `docker.sock`**, **no `--privileged`**, **no host network**, **no NVIDIA**.
-- He cannot open new inbound ports on the host: nothing is published for him beyond
-  `21128`, and he has no access to the Docker daemon.
+- He cannot open arbitrary new inbound ports from inside the desktop: only RustDesk
+  and the host/image-declared ports from §1 are published, and he has no access to
+  the Docker daemon.
 - Resource caps (`cpus 8`, `mem 16g`, `pids 4096`) keep him from starving the
   host's own workloads (e.g. your other GPU/compute containers).
 
@@ -111,22 +114,18 @@ confirmed by reading it back from `RustDesk.toml`; Linux: `chpasswd` + `passwd -
 ## 4. Capabilities & seccomp
 
 Haggai must be able to run `sudo apt install`, so the container runs with
-**Docker's default capability set + `SYS_PTRACE`**, and **default seccomp + AppArmor
-profiles kept ON**. Two hardening knobs are deliberately NOT used, because each
-would break `sudo`/`apt`:
+**Docker's default capability set**, and **default seccomp + AppArmor profiles kept
+ON**. Two hardening knobs are deliberately NOT used, because each would break
+`sudo`/`apt`:
 
 - **`no-new-privileges` is off** — it blocks `sudo` from elevating at all.
 - **`cap_drop: ALL` is not used** — it would strip `CHOWN`/`SETUID`/`SETGID`/
   `DAC_OVERRIDE` (so `apt`, `dpkg`, `sudo` fail) and `NET_RAW` (so Haggai's own
   `nmap`/`tcpdump`/`ping` fail).
 
-**Why `SYS_PTRACE` is added — and only that.** RustDesk 1.4.7 sets the unattended
-password with a *root* CLI command (`rustdesk --password`) that finds the
-user-owned `--server` by reading its `/proc/<pid>/exe`; reading another uid's
-`/proc/<pid>/exe` needs `CAP_SYS_PTRACE`, which Docker drops by default — so without
-it, provisioning fails ("No --server process found"). `SYS_PTRACE` only lets root
-introspect *other processes inside this container*; it is **not** a breakout
-primitive.
+RustDesk password provisioning does not require an added capability: the fork lets
+`rustdesk --password` run as `user` and reach its own uid-scoped IPC socket directly,
+without a root `/proc` scan or `CAP_SYS_PTRACE`.
 
 **What we evaluated and REJECTED.** We never use `seccomp=unconfined` or add
 `SYS_ADMIN`. Making this a "real" systemd/logind Ubuntu (so `systemctl` works) would

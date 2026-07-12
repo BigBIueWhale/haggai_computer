@@ -11,6 +11,8 @@
 !/home/.gitkeep
 
 # Editor / OS noise
+__pycache__/
+*.py[cod]
 *.swp
 *.swo
 *~

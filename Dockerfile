@@ -1039,6 +1039,12 @@ RUN npm install -g opencode-ai@1.1.53
 # sandbox_mode="danger-full-access" and is seeded into ~/.codex by the entrypoint.
 RUN npm install -g @openai/codex
 
+# T3 Code — a web GUI for coding agents. It wraps the already-installed Codex CLI
+# and serves a browser UI; run `t3 --host 0.0.0.0 --port 3773 --no-browser` when
+# you intentionally want it reachable through the published T3 Code port.
+RUN npm install -g t3@0.0.28 \
+    && t3 --version
+
 # ============================================================
 # REMOTE DESKTOP — RustDesk client (Direct IP Access) + X11 desktop
 # ============================================================
@@ -1076,16 +1082,17 @@ RUN set -e; for f in xscreensaver light-locker; do \
 # download our fork's reproducible (double-build A==B) .deb straight from its published
 # GitHub release, pinned + fail-closed by SHA-256 — the exact release asset for tag
 # commit-8179a3bae952 (fork v1.4.7-hardened.1). The build aborts on any SHA / package-
-# metadata mismatch, so a wrong or tampered asset can never install. The fork keeps
-# Package=rustdesk / Version=1.4.7 (it forks 1.4.7) and installs to
-# /usr/share/rustdesk/rustdesk, so every downstream path/service is unchanged. The fork
-# REPLACES upstream's plaintext direct-IP path with a mandatory CPace PAKE (so it is NOT
-# wire-compatible with the stock RustDesk app — the viewer must be the fork's client
-# too), compile-pins the direct port to 21118, the display server to X11, and the whole
-# security policy (verification-method / approve-mode / access-mode / hwcodec-off), and
-# excises the rendezvous/relay/updater/plugin paths — which makes several of this
-# Dockerfile's workarounds below inert (documented at each). `apt install ./<deb>`
-# resolves Noble's t64 transitional aliases.
+# metadata mismatch, so a wrong or tampered asset can never install; we also grep
+# the installed library for the CPace fork marker so a clean rebuild cannot silently
+# fall back to upstream. The fork keeps Package=rustdesk / Version=1.4.7 (it forks
+# 1.4.7) and installs to /usr/share/rustdesk/rustdesk, so every downstream path/service
+# is unchanged. The fork REPLACES upstream's plaintext direct-IP path with a mandatory
+# CPace PAKE (so it is NOT wire-compatible with the stock RustDesk app — the viewer
+# must be the fork's client too), compile-pins the direct port to 21118, the display
+# server to X11, and the whole security policy (verification-method / approve-mode /
+# access-mode / hwcodec-off), and excises the rendezvous/relay/updater/plugin paths —
+# which makes several of this Dockerfile's workarounds below inert (documented at each).
+# `apt install ./<deb>` resolves Noble's t64 transitional aliases.
 ARG RUSTDESK_VERSION=1.4.7
 # The release asset URL and its SHA-256 are ONE pinned identity — to move to a newer
 # fork build, bump both together (the tag in the URL and the hash).
@@ -1097,7 +1104,8 @@ RUN curl -fsSL -o /tmp/rustdesk.deb "${RUSTDESK_DEB_URL}" \
     && [ "$(dpkg-deb --field /tmp/rustdesk.deb Version)" = "${RUSTDESK_VERSION}" ] \
     && apt-get update && apt-get install -y /tmp/rustdesk.deb \
     && rm -rf /var/lib/apt/lists/* /tmp/rustdesk.deb \
-    && test -x /usr/share/rustdesk/rustdesk
+    && test -x /usr/share/rustdesk/rustdesk \
+    && grep -a -q 'rustdesk-fork/CPace' /usr/share/rustdesk/lib/librustdesk.so
 
 # Force RustDesk's Linux display-server detection to X11. In this container
 # `loginctl` may exist with no login1 session, so RustDesk's get_display_server()
@@ -1166,6 +1174,13 @@ RUN set -e; \
     for d in code code-url-handler; do f="/usr/share/applications/$d.desktop"; \
       [ -f "$f" ] && sed -ri 's#^Exec=/usr/share/code/code#Exec=/usr/share/code/code --no-sandbox#' "$f" || true; done; \
     grep -q -- '--no-sandbox' /usr/share/applications/code.desktop
+
+# Small desktop/terminal convenience tools that should be part of the immutable
+# image rather than installed in the container's writable layer.
+RUN apt-get update \
+    && apt-get install -y neofetch \
+    && rm -rf /var/lib/apt/lists/* \
+    && command -v neofetch
 
 # ============================================================
 # OPTIONAL: dev mode — host Docker CLI + the docker-guard wrapper
@@ -1240,9 +1255,14 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
 COPY config/RustDesk2.toml      /etc/haggai/skel/rustdesk/RustDesk2.toml
 COPY config/codex/config.toml   /etc/haggai/skel/codex/config.toml
 
-# Only the RustDesk Direct-IP listener is meant to be reachable. This EXPOSE is
-# documentation; docker-compose.yml publishes 0.0.0.0:21128 -> 21118/tcp.
-EXPOSE 21118/tcp
+# The immutable-image deployer reads this label after pulling a digest and publishes
+# these host ports automatically. EXPOSE mirrors the in-container listener metadata
+# for humans/tools, but Docker itself does not publish ports from EXPOSE.
+LABEL org.haggai.published-ports="[{\"host_port\":3000,\"container_port\":3000,\"protocol\":\"tcp\",\"description\":\"Next.js development server\"},{\"host_port\":5173,\"container_port\":5173,\"protocol\":\"tcp\",\"description\":\"Vite development server\"},{\"host_port\":8080,\"container_port\":8080,\"protocol\":\"tcp\",\"description\":\"alternate web preview / T3 Code\"},{\"host_ip\":\"127.0.0.1\",\"host_port\":3773,\"container_port\":3773,\"protocol\":\"tcp\",\"description\":\"T3 Code local web UI\"}]"
+
+# Published runtime ports. RustDesk is the remote desktop entrypoint; the web
+# ports are for app previews and T3 Code when explicitly started.
+EXPOSE 21118/tcp 3000/tcp 3773/tcp 5173/tcp 8080/tcp
 
 WORKDIR /home/user
 CMD ["/usr/local/bin/entrypoint.sh"]

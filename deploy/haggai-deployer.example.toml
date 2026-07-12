@@ -1,0 +1,50 @@
+# Copy to /etc/haggai/deployer.toml and edit the placeholders.
+# Keep the real file root-owned and mode 0600.
+
+[server]
+# Prefer 127.0.0.1 behind Caddy/nginx/Tailscale Funnel/etc. for TLS.
+listen_host = "127.0.0.1"
+listen_port = 8828
+max_body_bytes = 4096
+signature_tolerance_seconds = 300
+
+[desktop]
+name = "haggai_computer"
+
+# The host-trusted image repository. Do not include a tag or digest here.
+# The webhook may deploy only digests for this exact repository.
+image = "natanfreeman/docker-computer"
+
+container_name = "haggai_computer"
+hostname = "haggai-computer"
+home_dir = "/opt/haggai/haggai_computer/home"
+host_port = 21128
+container_port = 21118
+
+# Same secret currently passed to ./setup.sh: RustDesk permanent password and
+# the in-container user Linux/sudo password. Required because immutable updates
+# recreate the container and must reprovision /etc/shadow.
+password_file = "/etc/haggai/haggai-password"
+
+# App-preview ports are declared by the image label org.haggai.published-ports.
+# Add [[desktop.extra_ports]] only for host-local overrides or ports that should
+# be published independently of the image metadata.
+
+[runtime]
+cpus = "8.0"
+memory = "16g"
+memory_swap = "16g"
+pids_limit = 4096
+shm_size = "1g"
+health_timeout_seconds = 300
+
+[registry]
+host = "docker.io"
+username = "NatanFreeman"
+
+# Docker Hub access token with read-only access to desktop.image and nothing broader.
+token_file = "/etc/haggai/dockerhub-readonly-token"
+
+[webhook]
+# Shared secret used by GitHub Actions to HMAC-sign POST /deploy requests.
+secret_file = "/etc/haggai/webhook-secret"
