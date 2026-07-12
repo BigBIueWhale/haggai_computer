@@ -14,12 +14,21 @@ records what this project changes and why.
 0.0.0.0:21128/tcp  ->  container:21118/tcp   (RustDesk Direct IP Access)
 ```
 
-This is the **only** new externally-reachable listener. It is bound to `0.0.0.0`
-(deliberately, so it survives a LAN-IP change) and, because the box is DMZ'd, is
-reachable from the public internet at `<public-ip>:21128`. That is the intended
-**sovereign** path: Haggai's RustDesk app connects straight to your IP — no relay,
-no rustdesk.com, no Cloudflare. On the host it shows up as a `docker-proxy`
-listener.
+This is the **only** new externally reachable listener. RustDesk is bound to
+`0.0.0.0` deliberately so it survives a LAN-IP change; because the box is DMZ'd,
+it is reachable from the public internet at `<public-ip>:21128`. The hardened fork
+authenticates that entrypoint with its mandatory CPace PAKE before accepting a
+session.
+
+No application-preview or T3 Code port is Docker-published. A desktop user first
+connects with the hardened RustDesk client, then chooses **Control Actions → TCP
+Tunneling** and maps a viewer-local port to a specific guest target such as
+`127.0.0.1:3000`, `127.0.0.1:5173`, `127.0.0.1:8080`, or
+`127.0.0.1:3773`. The viewer-side endpoint stays on `127.0.0.1`; its traffic rides
+the already authenticated and encrypted RustDesk stream. This keeps arbitrary
+development servers off the public Internet and requires the operator to open each
+mapping explicitly. The Android viewer has no TCP-tunneling GUI, so this workflow
+requires the desktop client.
 
 Everything else the container does is **outbound only** (Codex API, `git push`,
 `apt`). No new UDP listener; Direct-IP is TCP-only. No host network, no
@@ -49,32 +58,23 @@ are not applied automatically.
 
 ---
 
-## 1a. RustDesk and UDP — why nothing random reaches your external interface
+## 1a. Hardened RustDesk network surface: one TCP listener, zero UDP/cloud paths
 
-Verified against the RustDesk 1.4.7 source: the "random ephemeral UDP port" that
-makes a default-deny UDP firewall impossible for the host's own RustDesk is a
-NAT-traversal / rendezvous artifact, and it is **always an outbound socket — there
-is no inbound random-UDP listener anywhere in the code**.
+The image does not install stock RustDesk 1.4.7. It installs the pinned
+`v1.4.7-hardened.1` fork artifact, whose direct-only build compiles out the
+rendezvous mediator, relay, KCP/UDP hole punching, LAN discovery, updater, and
+other cloud-control paths. Its controlled-side process binds exactly one IPv4 TCP
+listener at container port `21118` and zero UDP listeners; startup fails closed if
+that socket-surface invariant is not true. It does not register with
+`rs-ny.rustdesk.com` or require Docker Hub, GitHub Actions, a webhook, or any
+remote image-control service at runtime.
 
-- Haggai's **Direct IP Access** connection is a plain **TCP** connect to the
-  listener's fixed port (container `21118`, published as `21128`). No UDP, no
-  hole-punching — the host is directly reachable, so there is no NAT to traverse.
-  (`src/client.rs`: a peer that is an IP returns a `"TCP"` connection immediately;
-  the listener is a TCP `listen_any(21118)` in `src/rendezvous_mediator.rs`.)
-- Inside the container, `rustdesk --server` still opens (a) an **outbound**
-  ephemeral-UDP socket to register with `rs-ny.rustdesk.com:21116`, and (b) a
-  **fixed**-port `0.0.0.0:21119/udp` LAN-discovery listener (it opens because the
-  binary lives under `/usr`). **Both stay in the container's network namespace and
-  are NOT published**, so neither reaches the host's external interface.
-
-Net host-external surface from this project = exactly **`21128/tcp`**. No UDP
-allow-list, no ephemeral-range exception — unlike the host's own RustDesk.
-
-> **Sovereignty note:** that outbound rendezvous registration means the container
-> *does* phone home to `rs-ny.rustdesk.com` even though your sessions are
-> direct-IP. It is outbound-only and does not affect exposure, but if you want zero
-> contact with RustDesk's infrastructure, block the container's egress to those
-> hosts — the Direct-IP listener keeps working without them.
+Docker publishes that single listener as host `0.0.0.0:21128/tcp`. A TCP tunnel
+does not add another Docker or host listener: the authenticated desktop viewer
+creates a loopback listener on its own machine and carries the selected guest
+service over the existing keyed RustDesk connection. Net host-external surface
+from this project therefore remains exactly **`21128/tcp`**, with no UDP or
+application-preview-port allow-list exception.
 
 ---
 
@@ -101,8 +101,10 @@ confirmed by reading it back from `RustDesk.toml`; Linux: `chpasswd` + `passwd -
   He **cannot** see your files, your RustDesk/SSH/TeamViewer credentials, or
   anything else on the box.
 - **No `docker.sock`**, **no `--privileged`**, **no host network**, **no NVIDIA**.
-- He cannot open new inbound ports on the host: nothing is published for him beyond
-  `21128`, and he has no access to the Docker daemon.
+- He cannot open arbitrary new inbound ports on the host: only RustDesk in §1 is
+  published, and he has no Docker access. A TCP tunnel must be created explicitly
+  by the authenticated operator from a desktop RustDesk client and terminates on
+  that viewer's loopback interface.
 - Resource caps (`cpus 8`, `mem 16g`, `pids 4096`) keep him from starving the
   host's own workloads (e.g. your other GPU/compute containers).
 
@@ -111,8 +113,8 @@ confirmed by reading it back from `RustDesk.toml`; Linux: `chpasswd` + `passwd -
 ## 4. Capabilities & seccomp
 
 Haggai must be able to run `sudo apt install`, so the container runs with
-**Docker's default capability set + `SYS_PTRACE`**, and **default seccomp + AppArmor
-profiles kept ON**. Two hardening knobs are deliberately NOT used, because each
+**Docker's default capability set**, and **default seccomp + AppArmor profiles kept
+ON**. Two hardening knobs are deliberately NOT used, because each
 would break `sudo`/`apt`:
 
 - **`no-new-privileges` is off** — it blocks `sudo` from elevating at all.
@@ -120,13 +122,14 @@ would break `sudo`/`apt`:
   `DAC_OVERRIDE` (so `apt`, `dpkg`, `sudo` fail) and `NET_RAW` (so Haggai's own
   `nmap`/`tcpdump`/`ping` fail).
 
-**Why `SYS_PTRACE` is added — and only that.** RustDesk 1.4.7 sets the unattended
-password with a *root* CLI command (`rustdesk --password`) that finds the
-user-owned `--server` by reading its `/proc/<pid>/exe`; reading another uid's
-`/proc/<pid>/exe` needs `CAP_SYS_PTRACE`, which Docker drops by default — so without
-it, provisioning fails ("No --server process found"). `SYS_PTRACE` only lets root
-introspect *other processes inside this container*; it is **not** a breakout
-primitive.
+No extra runtime capability is added. The hardened RustDesk fork accepts password
+provisioning over the user's own IPC socket, so the old cross-UID `/proc` scan and
+its `SYS_PTRACE` requirement are gone.
+
+The pinned Vicinae input helper carries the file capability
+`cap_dac_override=ep`, matching Vicinae's official installer so snippet expansion
+and paste can work. It applies only to that helper, only inside the container, and
+grants no host access.
 
 **What we evaluated and REJECTED.** We never use `seccomp=unconfined` or add
 `SYS_ADMIN`. Making this a "real" systemd/logind Ubuntu (so `systemctl` works) would
@@ -149,7 +152,7 @@ anything he does is his container; the host is protected by the boundary above.
 
 ## 5. Pure X11 — no Wayland portal, no unattended-access patch
 
-The desktop is `Xvfb` + `XFCE` — **X11 end to end, never Wayland**. RustDesk
+The desktop is `Xvfb` + `KDE Plasma` — **X11 end to end, never Wayland**. RustDesk
 captures the X server directly, so unattended access is governed solely by the
 RustDesk permanent-password config. There is **no `xdg-desktop-portal`
 RemoteDesktop/ScreenCast consent dialog** (that only exists on Wayland), so the
@@ -173,16 +176,17 @@ he still consciously approves actions.
 
 ---
 
-## 6a. Browser & VS Code sandboxes — the same call as Codex
+## 6a. Chromium/Electron application sandboxes — the same call as Codex
 
-Firefox, Chrome, and VS Code are pre-installed as **real `.deb` packages** (Ubuntu
-24.04 ships them as *snaps*, and snapd cannot run in this non-systemd container, so
-the snap path is a dead end here). Chrome and VS Code are Chromium/Electron: their
+Firefox, Chrome, and VS Code are installed as real `.deb` packages; T3 Code is a
+checksum-pinned extracted AppImage. Ubuntu 24.04's default Firefox package resolves
+to a snap stub, and snapd cannot run in this non-systemd container, so that path is
+not used. Chrome, VS Code, and T3 Code are Chromium/Electron applications whose
 renderer sandboxes rely on **unprivileged user namespaces**, which Ubuntu 24.04
 blocks by default (`kernel.apparmor_restrict_unprivileged_userns`). Rather than flip
-that host-wide sysctl or weaken the container's seccomp (cf. §6), we launch **Chrome
-and VS Code with `--no-sandbox`** and let **Firefox** fall back to its seccomp-only
-content sandbox. The container is the isolation boundary, exactly as for Codex.
+that host-wide sysctl or weaken the container's seccomp (cf. §6), we launch Chrome,
+VS Code, and T3 Code with `--no-sandbox`; Firefox retains its available sandboxing.
+The container is the isolation boundary, exactly as for Codex.
 
 Honest trade-off: with `--no-sandbox`, a renderer exploit (e.g. a malicious web page)
 is **not** further confined by the browser's own sandbox — but it is still confined

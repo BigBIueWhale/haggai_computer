@@ -1,0 +1,7 @@
+[General]
+BrowserApplication=firefox.desktop
+TerminalApplication=ghostty
+TerminalService=com.mitchellh.ghostty.desktop
+
+[KDE]
+SingleClick=false

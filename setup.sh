@@ -405,14 +405,15 @@ cat <<EOF
 
   Inside the desktop:
      * Codex:   run 'codex' -> "Sign in with ChatGPT" (device code shown in the
-                terminal; open it on your phone), or  export OPENAI_API_KEY=...
+                terminal; open it on your phone), or set -Ux OPENAI_API_KEY 'sk-...'
      * GitHub:  'gh auth login' (device flow), then 'git push' works.
      * 'sudo' works with the same password; 'sudo apt install ...' PERSISTS
        across reboots (the whole container is persistent — see README).
 
-  DMZ NOTE: port ${HOST_PORT}/tcp is now reachable from the internet. Apply the
-  one-line allow-list edit in docs/SECURITY.md so verify_network_security.py
-  stays green and your posture stays known.
+  DMZ NOTE: only RustDesk port ${HOST_PORT}/tcp is reachable from the internet.
+  Web apps and T3 Code are not published; from a connected desktop client use
+  Control Actions -> TCP Tunneling to map a viewer-local port to the chosen guest
+  service. Apply the one-line allow-list edit in docs/SECURITY.md.
 
   Lifecycle:
      ./teardown.sh                  stop + remove the container (keeps ./home)

@@ -1,5 +1,5 @@
 # =============================================================================
-# haggai_computer — a full XFCE desktop in a container, reached over RustDesk
+# haggai_computer — a full KDE Plasma desktop in a container, reached over RustDesk
 # (Direct IP Access, sovereign — no relay), pre-loaded with a heavy
 # dev / reverse-engineering / data toolchain so OpenAI Codex can do real work.
 # The image builds on the powerful host; Haggai only streams pixels.
@@ -862,7 +862,7 @@ RUN pip3 install --break-system-packages --no-cache-dir \
 
 # Crypto, geo, cloud, serialization, config, utilities
 # NOTE: `supervisor` here provides supervisord — the process manager that runs
-#       the desktop stack (Xvfb/XFCE/pulseaudio/rustdesk) at container runtime.
+#       the desktop stack (Xvfb/KDE/pulseaudio/rustdesk) at container runtime.
 RUN pip3 install --break-system-packages --no-cache-dir \
     cryptography pynacl pycryptodome pycryptodomex bcrypt argon2-cffi passlib hashids pyjwt "python-jose[cryptography]" \
     itsdangerous asn1crypto pyotp qrcode keyring paramiko fabric python-gnupg certifi cffi \
@@ -1039,38 +1039,45 @@ RUN npm install -g opencode-ai@1.1.53
 # sandbox_mode="danger-full-access" and is seeded into ~/.codex by the entrypoint.
 RUN npm install -g @openai/codex
 
+# T3 Code CLI — web GUI for the already-installed Codex CLI. The matching
+# desktop app is installed below alongside the other GUI applications.
+RUN npm install -g t3@0.0.28 \
+    && t3 --version
+
 # ============================================================
 # REMOTE DESKTOP — RustDesk client (Direct IP Access) + X11 desktop
 # ============================================================
-# Pure X11 on purpose (Xvfb + XFCE, NO Wayland): RustDesk captures the X server
+# Pure X11 on purpose (Xvfb + KDE Plasma, NO Wayland): RustDesk captures the X server
 # directly, so unattended access needs only the permanent-password config (there
 # is no xdg-desktop-portal consent dialog on X11). Software video encoding only
 # (enable-hwcodec='N' in config/RustDesk2.toml) — this container never touches
 # the NVIDIA GPU.
 
-# XFCE desktop + virtual X server tooling + session bus + audio.
+# KDE Plasma and its standard KDE application set, plus virtual X server tooling,
+# the Fish login shell, and small desktop conveniences. kde-standard supplies the
+# Plasma X11 session and KDE-native apps such as Dolphin, Kate, Okular, Gwenview,
+# Ark, Spectacle, and System Settings. Ghostty replaces Konsole as the configured
+# default terminal below.
 # (xvfb / xauth / dbus are already pulled in by the toolchain above.)
-RUN apt-get update && apt-get install -y \
-    xfce4 \
-    xfce4-terminal \
-    xfce4-goodies \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    kde-standard \
+    kwin-x11 \
     dbus-x11 \
     x11-xserver-utils \
     x11-utils \
     pulseaudio \
+    fish \
+    neofetch \
+    libcap2-bin \
     && rm -rf /var/lib/apt/lists/*
 
-# Disable two XFCE autostarts that are wrong for a HEADLESS, RustDesk-streamed
-# desktop: xscreensaver would blank the captured framebuffer, and light-locker would
-# lock the session (a remote lock-out risk). Marking them Hidden=true makes
-# xfce4-session ignore them; the binaries stay installed, this only stops autostart.
-RUN set -e; for f in xscreensaver light-locker; do \
-      d="/etc/xdg/autostart/$f.desktop"; \
-      if [ -f "$d" ]; then \
-        printf '\n# Disabled for haggai_computer (headless): no screen to blank or lock.\nHidden=true\n' >> "$d"; \
-        echo "disabled autostart: $d"; \
-      fi; \
-    done
+# Fail the build if the intended desktop/shell tools were not installed.
+RUN command -v startplasma-x11 \
+    && command -v kwin_x11 \
+    && command -v dolphin \
+    && command -v kate \
+    && command -v fish \
+    && command -v neofetch
 
 # RustDesk — THE HARDENED FORK, not upstream 1.4.7. Instead of upstream's release we
 # download our fork's reproducible (double-build A==B) .deb straight from its published
@@ -1108,7 +1115,7 @@ RUN curl -fsSL -o /tmp/rustdesk.deb "${RUSTDESK_DEB_URL}" \
 ENV RUSTDESK_FORCED_DISPLAY_SERVER=x11
 
 # ============================================================
-# DESKTOP GUI APPS — Firefox, Chrome, VS Code (real .deb, never snaps)
+# DESKTOP GUI APPS — Firefox, Chrome, VS Code, Ghostty, T3 Code, Vicinae
 # ============================================================
 # On Ubuntu 24.04 `apt install firefox` / `chromium` pull snap STUBS, and snapd
 # cannot run in this non-systemd container. So we install the upstream .deb builds
@@ -1167,6 +1174,72 @@ RUN set -e; \
       [ -f "$f" ] && sed -ri 's#^Exec=/usr/share/code/code#Exec=/usr/share/code/code --no-sandbox#' "$f" || true; done; \
     grep -q -- '--no-sandbox' /usr/share/applications/code.desktop
 
+# Ghostty — the preinstalled default terminal. Ghostty does not publish official
+# Linux packages, so use the Noble package maintained by the community packager
+# linked from Ghostty's install documentation. Pin both release URL and SHA-256.
+ARG GHOSTTY_VERSION=1.3.1-0~ppa2
+ARG GHOSTTY_DEB_URL=https://github.com/mkasberg/ghostty-ubuntu/releases/download/1.3.1-0-ppa2/ghostty_1.3.1-0.ppa2_amd64_24.04.deb
+ARG GHOSTTY_DEB_SHA256=478d440153ef544426418efc7d6d8901715359f452c46be29071901a94b8cd47
+RUN curl -fsSL -o /tmp/ghostty.deb "${GHOSTTY_DEB_URL}" \
+    && echo "${GHOSTTY_DEB_SHA256}  /tmp/ghostty.deb" | sha256sum --check --status \
+    && [ "$(dpkg-deb --field /tmp/ghostty.deb Package)" = "ghostty" ] \
+    && [ "$(dpkg-deb --field /tmp/ghostty.deb Version)" = "${GHOSTTY_VERSION}" ] \
+    && apt-get update && apt-get install -y /tmp/ghostty.deb \
+    && rm -rf /var/lib/apt/lists/* /tmp/ghostty.deb \
+    && test -x /usr/bin/ghostty \
+    && test -f /usr/share/applications/com.mitchellh.ghostty.desktop \
+    && update-alternatives --install /usr/bin/x-terminal-emulator x-terminal-emulator /usr/bin/ghostty 60 \
+    && update-alternatives --set x-terminal-emulator /usr/bin/ghostty
+
+# T3 Code desktop app. Extract the pinned AppImage into /opt so it runs without
+# FUSE in the container, then install its real desktop entry and icon theme assets.
+# The AppImage runtime preserves owner-only permissions in parts of its tree, so
+# make the installed AppDir readable/traversable by the unprivileged desktop user.
+# The /usr/local/bin/t3-code wrapper added below supplies Electron's required
+# --no-sandbox flag for this container's security model.
+ARG T3_CODE_VERSION=0.0.28
+ARG T3_CODE_APPIMAGE_URL=https://github.com/pingdotgg/t3code/releases/download/v0.0.28/T3-Code-0.0.28-x86_64.AppImage
+ARG T3_CODE_APPIMAGE_SHA256=fa6069fb03eb25157f1e96a29901dca81bb0a9970f5936ca255342556ec42e0a
+RUN curl -fsSL -o /tmp/t3-code.AppImage "${T3_CODE_APPIMAGE_URL}" \
+    && echo "${T3_CODE_APPIMAGE_SHA256}  /tmp/t3-code.AppImage" | sha256sum --check --status \
+    && chmod 0755 /tmp/t3-code.AppImage \
+    && cd /tmp \
+    && /tmp/t3-code.AppImage --appimage-extract >/dev/null \
+    && mv /tmp/squashfs-root /opt/t3-code \
+    && chmod -R a+rX /opt/t3-code \
+    && install -Dm0644 /opt/t3-code/t3code.desktop /usr/local/share/applications/t3code.desktop \
+    && sed -i 's#^Exec=.*#Exec=/usr/local/bin/t3-code %U#' /usr/local/share/applications/t3code.desktop \
+    && cp -a /opt/t3-code/usr/share/icons/hicolor/. /usr/local/share/icons/hicolor/ \
+    && rm -f /tmp/t3-code.AppImage \
+    && test -x /opt/t3-code/t3code \
+    && grep -q "X-AppImage-Version=${T3_CODE_VERSION}" /usr/local/share/applications/t3code.desktop
+
+# Vicinae. Its official Linux distribution is an AppImage; reproduce the
+# official installer's layout while pinning the release and checksum. This keeps
+# the bundled Qt/runtime libraries, helper processes, themes, icons, desktop
+# entries, and deeplink handler intact. The menu entry toggles the already-running
+# server, which the KDE session starts from /etc/xdg/autostart.
+ARG VICINAE_VERSION=0.23.1
+ARG VICINAE_APPIMAGE_URL=https://github.com/vicinaehq/vicinae/releases/download/v0.23.1/Vicinae-x86_64.AppImage
+ARG VICINAE_APPIMAGE_SHA256=3c3d4c2547ee01cd54943f6344dbd419749dda23a4f9b1823091ca049fe73a5e
+RUN curl -fsSL -o /tmp/vicinae.AppImage "${VICINAE_APPIMAGE_URL}" \
+    && echo "${VICINAE_APPIMAGE_SHA256}  /tmp/vicinae.AppImage" | sha256sum --check --status \
+    && chmod 0755 /tmp/vicinae.AppImage \
+    && cd /tmp \
+    && /tmp/vicinae.AppImage --appimage-extract >/dev/null \
+    && mv /tmp/squashfs-root /usr/local/lib/vicinae \
+    && ln -s /usr/local/lib/vicinae/usr/bin/vicinae /usr/local/bin/vicinae \
+    && cp -a /usr/local/lib/vicinae/usr/share/vicinae /usr/local/share/ \
+    && cp -a /usr/local/lib/vicinae/usr/share/icons/hicolor/. /usr/local/share/icons/hicolor/ \
+    && cp -a /usr/local/lib/vicinae/usr/share/applications/vicinae*.desktop /usr/local/share/applications/ \
+    && sed -i '0,/^Exec=.*/s#^Exec=.*#Exec=vicinae toggle#' /usr/local/share/applications/vicinae.desktop \
+    && setcap cap_dac_override=ep /usr/local/lib/vicinae/usr/libexec/vicinae/vicinae-input-server \
+    && rm -f /tmp/vicinae.AppImage \
+    && test -x /usr/local/bin/vicinae \
+    && test -f /usr/local/share/applications/vicinae-url-handler.desktop \
+    && grep -q '^Exec=vicinae toggle$' /usr/local/share/applications/vicinae.desktop \
+    && vicinae version | grep -q "Version v${VICINAE_VERSION}"
+
 # ============================================================
 # OPTIONAL: dev mode — host Docker CLI + the docker-guard wrapper
 # (build arg WITH_DEV, default 0 = OFF)
@@ -1219,29 +1292,37 @@ RUN if [ "$WITH_DEV" = "1" ]; then \
 #     which is what unlocks both remote-desktop login and sudo.
 # Ubuntu 24.04 ships an "ubuntu" user at uid 1000; remove it so `user` can take 1000.
 RUN userdel -r ubuntu 2>/dev/null || true \
-    && useradd -m -s /bin/bash -G sudo -u 1000 user
+    && useradd -m -s /usr/bin/fish -G sudo -u 1000 user \
+    && [ "$(getent passwd user | cut -d: -f7)" = "/usr/bin/fish" ]
 
 # ============================================================
 # PROCESS SUPERVISION + RUNTIME CONFIG SEEDS
 # ============================================================
 # supervisord (the `supervisor` pip package above) runs the desktop stack, in
-# order, all as `user`:  Xvfb -> pulseaudio -> XFCE(+dbus) -> rustdesk --server.
+# order, all as `user`: Xvfb -> pulseaudio -> KDE Plasma (+ D-Bus) -> RustDesk.
 COPY supervisord.conf /etc/supervisor/haggai.conf
 COPY rootfs/usr/local/bin/ /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/start-xvfb.sh \
-             /usr/local/bin/start-xfce.sh \
+             /usr/local/bin/start-kde.sh \
              /usr/local/bin/start-pulseaudio.sh \
-             /usr/local/bin/start-rustdesk.sh
+             /usr/local/bin/start-rustdesk.sh \
+             /usr/local/bin/t3-code
 
 # Skeleton configs. /home/user is a runtime bind-mount, so these cannot be baked
 # into it at build time; the entrypoint copies them into the user's home on first
 # run (idempotent, only if absent), then chowns them to `user`.
 COPY config/RustDesk2.toml      /etc/haggai/skel/rustdesk/RustDesk2.toml
 COPY config/codex/config.toml   /etc/haggai/skel/codex/config.toml
+COPY config/kde/                /etc/haggai/skel/kde/
+COPY config/fish/config.fish    /etc/haggai/skel/fish/config.fish
+COPY config/vicinae/settings.json /etc/haggai/skel/vicinae/settings.json
+COPY config/vicinae/vicinae-autostart.desktop /etc/xdg/autostart/vicinae.desktop
 
-# Only the RustDesk Direct-IP listener is meant to be reachable. This EXPOSE is
-# documentation; docker-compose.yml publishes 0.0.0.0:21128 -> 21118/tcp.
+# Only RustDesk is published. Web apps and T3 Code stay private inside the
+# container and are reached on demand through RustDesk's authenticated TCP
+# Tunneling feature. EXPOSE is documentation—docker-compose.yml owns the actual
+# host binding.
 EXPOSE 21118/tcp
 
 WORKDIR /home/user

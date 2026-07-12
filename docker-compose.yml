@@ -22,8 +22,9 @@ services:
     # the single fixed port 21128, on ALL interfaces (0.0.0.0) so it survives any
     # future LAN-IP change. The box is DMZ'd, so this is reachable from the public
     # internet at <public-ip>:21128 — that is the intended sovereign path (no
-    # relay). It is the ONE new internet-reachable port; docs/SECURITY.md carries
-    # the matching verify_network_security.py allow-list edit you must apply.
+    # relay). It is the ONE new internet-reachable port. Web applications and T3
+    # Code are deliberately NOT published; a desktop viewer reaches them on
+    # demand through RustDesk's authenticated TCP Tunneling feature.
     ports:
       - "21128:21118/tcp"
 
@@ -62,7 +63,7 @@ services:
     mem_limit: 16g
     memswap_limit: 16g          # == mem_limit ⇒ no swap blow-out
     pids_limit: 4096
-    shm_size: 1g                # XFCE + browsers want more than the 64m default
+    shm_size: 1g                # KDE + browsers want more than the 64m default
 
     # --- Hardening / blast-radius -------------------------------------------
     # NO privileged, NO docker.sock, NO host network, NO NVIDIA runtime. Default
@@ -84,7 +85,8 @@ services:
 
     # --- Health --------------------------------------------------------------
     # "Healthy" == the RustDesk Direct-IP listener is up inside the container.
-    # setup.sh waits on this before setting the password.
+    # The fork binds only after setup.sh sets the permanent password, so setup
+    # waits for this healthcheck after password provisioning.
     healthcheck:
       test: ["CMD-SHELL", "ss -ltn | grep -q ':21118 '"]
       interval: 10s

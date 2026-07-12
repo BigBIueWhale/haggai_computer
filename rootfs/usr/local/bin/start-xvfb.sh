@@ -1,7 +1,7 @@
 #!/bin/bash
 # start-xvfb.sh — the virtual X11 display (:99) the whole desktop renders into.
 # Pure software framebuffer; this container never touches the NVIDIA GPU.
-# 1920x1080x24, with RANDR/RENDER/GLX so XFCE and apps are happy. No TCP listener.
+# 1920x1080x24, with RANDR/RENDER/GLX so KDE and apps are happy. No TCP listener.
 #
 # `-s 0` disables the X screen-saver at the SERVER level. Verified empirically that
 # for Xvfb this means "timeout 0 = never blank" (not the "blank immediately" myth).

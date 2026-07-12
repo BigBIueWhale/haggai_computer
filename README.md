@@ -1,7 +1,7 @@
 # haggai_computer
 
 <p align="center">
-  <img src="docs/screenshot.jpg" alt="A full XFCE Linux desktop running on an Android phone through the RustDesk app" width="820">
+  <img src="docs/screenshot.jpg" alt="A full Linux desktop running on an Android phone through the RustDesk app" width="820">
   <br>
   <sub><em>One of these desktops — Haggai's — live on his Android phone over RustDesk Direct IP.</em></sub>
 </p>
@@ -12,7 +12,7 @@
 > storage, and downloading. Every desktop is a full, persistent Ubuntu machine,
 > isolated from the others and from the host.
 
-Each desktop is a **Docker container** running a real **XFCE desktop**, reached over
+Each desktop is a **Docker container** running a real **KDE Plasma desktop**, reached over
 **RustDesk** in **Direct IP Access** mode — straight to your box's public IP, with
 **no relay, no rustdesk.com account, and no Cloudflare** (sovereign by design). Each
 is pre-loaded with a heavy dev / reverse-engineering / data toolchain so **OpenAI
@@ -21,8 +21,8 @@ Codex** can do real work and the user can `git push`.
 This repository provisions **one such desktop — Haggai's.** He's in a Yeshiva on a
 thin link, so he downloads nothing: the big image builds once on this box and he
 just streams the screen. Aim it at anyone else and it's their machine instead — and
-you can [**run several side by side**](#more-than-one-person) on the same server, one
-port each.
+you can [**run several side by side**](#more-than-one-person) on the same server,
+one RustDesk port each.
 
 ---
 
@@ -38,23 +38,28 @@ Linux/sudo login. The first build is **large and slow by design** (full toolchai
 Ghidra + PyTorch + RustDesk + desktop) — let it run; it prints the connect string
 when it finishes.
 
-> ⚠️ Each desktop publishes **one** internet-reachable port (this one:
-> `0.0.0.0:21128/tcp`) on your DMZ'd box. Add that port to the allow-list in
-> [`docs/SECURITY.md`](docs/SECURITY.md) so `verify_network_security.py` stays green.
-> That is the only posture change per desktop.
+> ⚠️ Each desktop publishes exactly **one** internet-reachable port: the
+> hardened RustDesk listener (this one is `0.0.0.0:21128/tcp`). Development web
+> servers and T3 Code are deliberately **not** Docker-published. From the desktop
+> RustDesk client, connect first and use **Control Actions → TCP Tunneling** to
+> expose a chosen guest service only on the viewer's loopback interface. See
+> [`docs/SECURITY.md`](docs/SECURITY.md) for the rationale and exact workflow.
 
 ---
 
 ## How a user connects (phone + computer)
 
-1. Install **RustDesk** (Android: Play Store / official APK; desktop: rustdesk.com).
+1. Install the matching **hardened RustDesk fork client** from
+   [`BigBIueWhale/rustdesk_fork`](https://github.com/BigBIueWhale/rustdesk_fork).
+   Stock RustDesk is not wire-compatible with this deployment's mandatory CPace
+   handshake. Use a desktop build when TCP Tunneling is needed.
 2. Use **Direct IP Access** — put
    ```
    <YOUR-PUBLIC-IP>:21128
    ```
    in the ID/peer field and connect. (On the same LAN, use the box's LAN IP, which
    `setup.sh` prints.)
-3. Enter the password from setup. You land on the XFCE desktop with full keyboard,
+3. Enter the password from setup. You land on the KDE Plasma desktop with full keyboard,
    mouse, and clipboard.
 
 The connection is **straight to your box's IP** — no relay, no account. Capture is
@@ -66,7 +71,7 @@ remote user never hits a black or locked screen.
 
 ## First run inside the desktop
 
-Open a terminal (XFCE Terminal) and:
+Open **Ghostty** (the default terminal, also available with `Ctrl+Alt+T`) and:
 
 - **OpenAI Codex**
   ```bash
@@ -74,8 +79,8 @@ Open a terminal (XFCE Terminal) and:
   ```
   Choose **"Sign in with ChatGPT"** — it prints a URL + device code you open on your
   phone (works on a thin link). Or use an API key:
-  ```bash
-  export OPENAI_API_KEY='sk-...'      # add to ~/.bashrc to persist
+  ```fish
+  set -Ux OPENAI_API_KEY 'sk-...'     # Fish universal variable; persists
   ```
   Credentials persist in `~/.codex`. Codex ships pre-configured for in-container use
   (`~/.codex/config.toml`, `sandbox_mode = "danger-full-access"`) — see
@@ -92,6 +97,24 @@ Open a terminal (XFCE Terminal) and:
 - **`sudo`** uses the same password you set. `sudo apt install <whatever>` works and
   **persists across reboots** (see Persistence).
 
+- **Vicinae** starts with Plasma and replaces the launcher workflow. Press
+  **`Meta+Space`** to toggle it; app search, clipboard history, file search,
+  calculator, and its extension store are ready without a separate install.
+
+- **T3 Code** appears in Plasma's application menu like the other GUI apps. The
+  `t3` CLI is also installed. To use its web UI without publishing another Docker
+  port, start it inside the desktop:
+  ```fish
+  t3 --host 127.0.0.1 --port 3773 --no-browser
+  ```
+  Then, from the connected **desktop** RustDesk client, open **Control Actions →
+  TCP Tunneling** and map a free local port to remote `127.0.0.1:3773`. Open the
+  resulting `http://127.0.0.1:<local-port>` on the viewer. Use the same pattern for
+  a development server on `3000`, `5173`, `8080`, or any other chosen guest port.
+  No additional host port is opened, and the service is carried inside the
+  authenticated, encrypted RustDesk session. The Android viewer does not provide
+  this TCP-tunneling GUI, so this workflow intentionally requires a desktop client.
+
 ---
 
 ## What's inside (every desktop)
@@ -102,17 +125,22 @@ with its original explanatory comments kept. Highlights:
 
 - **Languages/runtimes:** Python 3 (+ a huge pip stack incl. numpy/pandas/PyTorch
   CPU/transformers), **Node.js 22**, Go, Rust, Ruby, Perl, Lua 5.4, R, Bun, `uv`.
-- **Coding agents:** **OpenAI Codex** (primary) and **OpenCode** (available).
+- **Coding agents:** **OpenAI Codex** (primary), **T3 Code** (desktop app plus
+  `t3@0.0.28` CLI), and **OpenCode** (available).
 - **Build/embedded:** gcc/g++/clang, cmake/ninja/meson, ARM/aarch64 cross, qemu.
 - **Reverse engineering:** Ghidra, radare2, binwalk, capstone/lief/pefile, 7zz.
 - **Networking/pcap:** nmap, tcpdump, tshark/termshark, scapy, wireshark tooling.
 - **Docs/media/OCR:** ffmpeg, imagemagick, pandoc, LibreOffice, tesseract (+ langs),
   Playwright (Chromium+Firefox), and a comprehensive font set.
-- **Editors/CLIs:** vim/neovim/emacs/micro, ripgrep/fd/bat/fzf, git/gh, tmux, etc.
-- **Desktop GUI apps:** **Firefox**, **Google Chrome**, and **VS Code**, pre-installed
-  as real `.deb`s. (Ubuntu 24.04 ships these as *snaps*, and snapd can't run in a
-  non-systemd container — so the `.deb` builds are the working path here; `apt install
-  firefox` stays pinned to Mozilla's `.deb` too.)
+- **Editors/CLIs:** vim/neovim/emacs/micro, ripgrep/fd/bat/fzf, git/gh, tmux,
+  **NeoFetch**, etc.
+- **Desktop:** **KDE Plasma 5 on X11** with the standard KDE application set:
+  Dolphin, Kate, Okular, Gwenview, Ark, Spectacle, System Settings, and more.
+- **Shell and terminal:** **Fish** is the account's login shell and **Ghostty** is
+  Plasma's default terminal.
+- **Desktop GUI apps:** **Firefox**, **Google Chrome**, **VS Code**, **T3 Code**, and
+  **Vicinae** are pre-installed with normal application-menu launchers. Firefox,
+  Chrome, and VS Code use real `.deb`s rather than nonfunctional container snaps.
 
 **Deliberately excluded** (your instruction): the **Qwen** CLI and the **Mistral
 `vibe`** CLI (and their Ollama/air-gap scaffolding). `ttyd` is built as a tool but
@@ -129,17 +157,18 @@ slow build happens once) and the server's CPU/RAM, which the per-desktop caps
 (`cpus 8`, `mem 16g`, `pids 4096`) keep fair.
 
 To add another, give a **fresh copy of this repo** (e.g. another `git clone`, so its
-`./home` starts empty) its own **three** unique values, then run its `setup.sh`:
+`./home` starts empty) its own name, RustDesk port, and home directory, then run its
+`setup.sh`:
 
 | Make unique per desktop | Where to set it |
 |---|---|
 | **Name** (e.g. `avi_computer`) | `docker-compose.yml`: the `services:` key, `container_name`, `hostname` — **and** `setup.sh`: `CONTAINER`, `SERVICE` |
-| **Host port** (e.g. `21129`) | `docker-compose.yml`: the `ports:` host side — **and** `setup.sh`: `HOST_PORT` |
+| **RustDesk host port** (e.g. `21129`) | `docker-compose.yml`: the `ports:` host side — **and** `setup.sh`: `HOST_PORT` |
 | **Home dir** | `docker-compose.yml`: the `volumes:` host side (keep it inside that desktop's own folder) |
 
 Everything else (the image, the caps, the whole security posture) stays identical.
-Each desktop lands on its own `0.0.0.0:<port>` — add a matching allow-list line in
-`docs/SECURITY.md` per port.
+Each desktop lands on one explicit RustDesk port; add the matching allow-list line
+in `docs/SECURITY.md` for that port. Guest web services remain tunnel-only.
 
 > These three are left **explicit per deployment on purpose** (the project's
 > "specific, not configurable" rule): you should always know exactly who is on which
@@ -230,7 +259,7 @@ A desktop's container is a long-lived **pet**, not a throwaway:
 | `./setup.sh '<pw>'` | Build + start + provision (first time only; refuses if it already exists). |
 | `docker compose stop` / `start` | Pause / resume. Keeps **everything**. |
 | `docker compose logs -f` | Watch the desktop / RustDesk logs. |
-| `docker compose exec -u user haggai_computer bash` | A shell as `user` inside. |
+| `docker compose exec -u user haggai_computer fish` | A shell as `user` inside. |
 | `./teardown.sh` | Remove the container (discards apt installs; **keeps `./home`** + image). |
 | `./teardown.sh --purge` | Above **and** delete `./home` (immediate; the flag is the confirmation, no prompt). |
 
@@ -247,14 +276,15 @@ for *compute* only; graphics still render on the CPU, so the desktop spends 0 VR
 
 ## Reproducibility boundary
 
-- **Pinned** (security-relevant / where upstream pins): RustDesk `1.4.7` (SHA-256
-  verified, fail-closed), base `ubuntu:24.04`, Node major `22`, Ghidra (SHA),
-  radare2/ttyd commits, libwebsockets tag, `7zip`/`binwalk` versions.
+- **Pinned** (security-relevant / binary artifacts): RustDesk `1.4.7`, T3 Code
+  `0.0.28`, Vicinae `0.23.1`, and Ghostty `1.3.1-0~ppa2` are SHA-256 verified and
+  fail closed; the base is `ubuntu:24.04`. Ghidra, radare2/ttyd, libwebsockets,
+  `7zip`, and `binwalk` retain their existing pins.
 - **Tracking-upstream** (the large apt/pip/npm dev sets, Codex, gh): current-stable
   at build time — matching the upstream Dockerfile and the `personal_server` §16
   "dev toolchain is intentionally unpinned" precedent. A rebuild months later may
   pull newer tool versions; that's deliberate.
 
 See [`docs/SECURITY.md`](docs/SECURITY.md) for the full security posture, the exact
-per-port network-audit edit, the shared-password model, and optional extra hardening.
-</content>
+RustDesk-port network-audit edit, the shared-password model, and optional extra
+hardening.
