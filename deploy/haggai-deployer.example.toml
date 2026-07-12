@@ -26,30 +26,9 @@ container_port = 21118
 # recreate the container and must reprovision /etc/shadow.
 password_file = "/etc/haggai/haggai-password"
 
-[[desktop.extra_ports]]
-host_port = 3000
-container_port = 3000
-protocol = "tcp"
-description = "Next.js development server"
-
-[[desktop.extra_ports]]
-host_port = 5173
-container_port = 5173
-protocol = "tcp"
-description = "Vite development server"
-
-[[desktop.extra_ports]]
-host_port = 8080
-container_port = 8080
-protocol = "tcp"
-description = "alternate web preview / T3 Code with --port 8080"
-
-[[desktop.extra_ports]]
-host_ip = "127.0.0.1"
-host_port = 3773
-container_port = 3773
-protocol = "tcp"
-description = "T3 Code local web UI"
+# App-preview ports are declared by the image label org.haggai.published-ports.
+# Add [[desktop.extra_ports]] only for host-local overrides or ports that should
+# be published independently of the image metadata.
 
 [runtime]
 cpus = "8.0"

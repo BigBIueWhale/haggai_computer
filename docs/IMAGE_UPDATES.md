@@ -134,8 +134,10 @@ X-Haggai-Signature: sha256=<hex hmac>
 The host then pulls with the read-only registry token and runs the image by digest,
 never by mutable tag.
 
-The example config also publishes app-preview ports `3000/tcp`, `5173/tcp`, and
-`8080/tcp`, plus T3 Code's `3773/tcp` on host loopback only.
+The deployer also reads the pulled image's `org.haggai.published-ports` label and
+publishes those host ports. To add a new preview port to future immutable deploys,
+change that label in the Dockerfile and rebuild the image; no host TOML edit is
+needed unless you want a host-only override.
 
 ## Rollback
 

@@ -1255,6 +1255,11 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
 COPY config/RustDesk2.toml      /etc/haggai/skel/rustdesk/RustDesk2.toml
 COPY config/codex/config.toml   /etc/haggai/skel/codex/config.toml
 
+# The immutable-image deployer reads this label after pulling a digest and publishes
+# these host ports automatically. EXPOSE mirrors the in-container listener metadata
+# for humans/tools, but Docker itself does not publish ports from EXPOSE.
+LABEL org.haggai.published-ports="[{\"host_port\":3000,\"container_port\":3000,\"protocol\":\"tcp\",\"description\":\"Next.js development server\"},{\"host_port\":5173,\"container_port\":5173,\"protocol\":\"tcp\",\"description\":\"Vite development server\"},{\"host_port\":8080,\"container_port\":8080,\"protocol\":\"tcp\",\"description\":\"alternate web preview / T3 Code\"},{\"host_ip\":\"127.0.0.1\",\"host_port\":3773,\"container_port\":3773,\"protocol\":\"tcp\",\"description\":\"T3 Code local web UI\"}]"
+
 # Published runtime ports. RustDesk is the remote desktop entrypoint; the web
 # ports are for app previews and T3 Code when explicitly started.
 EXPOSE 21118/tcp 3000/tcp 3773/tcp 5173/tcp 8080/tcp

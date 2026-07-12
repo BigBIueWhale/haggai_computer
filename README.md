@@ -50,10 +50,10 @@ The Docker image name used by the deployer examples is:
 natanfreeman/docker-computer
 ```
 
-> ⚠️ Each desktop publishes RustDesk plus explicit web-preview ports on your
-> DMZ'd box: `21128/tcp`, `3000/tcp`, `5173/tcp`, and `8080/tcp`. T3 Code's
-> `3773/tcp` is bound to host loopback only by default. Add the public ports to
-> the allow-list in [`docs/SECURITY.md`](docs/SECURITY.md) so
+> ⚠️ Each desktop publishes RustDesk plus image-declared web-preview ports on your
+> DMZ'd box. This image declares `3000/tcp`, `5173/tcp`, and `8080/tcp` public,
+> while T3 Code's `3773/tcp` is bound to host loopback only by default. Add the
+> public ports to the allow-list in [`docs/SECURITY.md`](docs/SECURITY.md) so
 > `verify_network_security.py` stays green.
 
 ---
@@ -154,7 +154,7 @@ its `setup.sh`:
 | Make unique per desktop | Where to set it |
 |---|---|
 | **Name** (e.g. `avi_computer`) | `docker-compose.yml`: the `services:` key, `container_name`, `hostname` — **and** `setup.sh`: `CONTAINER`, `SERVICE` |
-| **Host port set** (e.g. RustDesk `21129`, previews `13000`/`15173`/`18080`) | `docker-compose.yml`: every `ports:` host side — **and** `setup.sh`: `HOST_PORT` for RustDesk |
+| **Host port set** (e.g. RustDesk `21129`, previews `13000`/`15173`/`18080`) | `docker-compose.yml`: every `ports:` host side — **and** `setup.sh`: `HOST_PORT` for RustDesk. Immutable-image deploys read preview ports from the image label `org.haggai.published-ports`. |
 | **Home dir** | `docker-compose.yml`: the `volumes:` host side (keep it inside that desktop's own folder) |
 
 Everything else (the image, the caps, the whole security posture) stays identical.

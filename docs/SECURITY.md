@@ -8,7 +8,9 @@ records what this project changes and why.
 
 ## 1. Internet-reachable ports — and the audit edit you must apply
 
-`docker-compose.yml` publishes:
+`docker-compose.yml` publishes the static/manual port set. The immutable-image
+deployer publishes RustDesk plus whatever the image declares in
+`org.haggai.published-ports`; this image currently declares the same preview set:
 
 ```
 0.0.0.0:21128/tcp  ->  container:21118/tcp   (RustDesk hardened fork Direct IP)
@@ -22,10 +24,10 @@ RustDesk is bound to `0.0.0.0` deliberately, so it survives a LAN-IP change; bec
 the box is DMZ'd, it is reachable from the public internet at `<public-ip>:21128`.
 That is the intended **sovereign** path: Haggai's matching RustDesk hardened fork
 client connects straight to your IP — no relay, no rustdesk.com, no Cloudflare.
-The app-preview ports are also explicitly published so web work inside the desktop
-can be tested from outside the container. T3 Code's conventional `3773/tcp` is
-bound to host loopback only; expose it through a TLS reverse proxy or tunnel
-before sharing it.
+The app-preview ports are declared in the image so a rebuilt image can add or remove
+preview listeners without a host TOML edit. T3 Code's conventional `3773/tcp` is
+bound to host loopback only; expose it through a TLS reverse proxy or tunnel before
+sharing it.
 
 Everything else the container does is **outbound only** (Codex API, `git push`,
 `apt`). No new UDP listener; Direct-IP is TCP-only. No host network, no
@@ -71,9 +73,10 @@ server binds exactly one in-container listener:
 0.0.0.0:21118/tcp
 ```
 
-That is published by Docker as host `21128/tcp`. Net host-external surface from
-this project = exactly **`21128/tcp`**, **`3000/tcp`**, **`5173/tcp`**, and
-**`8080/tcp`**. No UDP allow-list and no ephemeral-range exception are required.
+That is published by Docker as host `21128/tcp`. With the current image metadata,
+the net host-external surface from this project is **`21128/tcp`**, **`3000/tcp`**,
+**`5173/tcp`**, and **`8080/tcp`**. If the image's `org.haggai.published-ports`
+label changes, update the audit allow-list to match.
 
 ---
 
@@ -100,9 +103,9 @@ Linux: `chpasswd` + `passwd -S` → `P`).
   He **cannot** see your files, your RustDesk/SSH/TeamViewer credentials, or
   anything else on the box.
 - **No `docker.sock`**, **no `--privileged`**, **no host network**, **no NVIDIA**.
-- He cannot open arbitrary new inbound ports on the host: only the explicit RustDesk
-  and web-preview ports listed in §1 are published, and he has no access to the
-  Docker daemon.
+- He cannot open arbitrary new inbound ports from inside the desktop: only RustDesk
+  and the host/image-declared ports from §1 are published, and he has no access to
+  the Docker daemon.
 - Resource caps (`cpus 8`, `mem 16g`, `pids 4096`) keep him from starving the
   host's own workloads (e.g. your other GPU/compute containers).
 

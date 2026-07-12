@@ -37,6 +37,7 @@ RUSTDESK_PASSWORD_TIMEOUT = 420
 RUSTDESK_PASSWORD_REFIRE = 20
 POLL_SLEEP = 3
 LINUX_PASSWORD_TIMEOUT = 60
+IMAGE_PUBLISHED_PORTS_LABEL = "org.haggai.published-ports"
 
 
 class DeployError(RuntimeError):
@@ -161,42 +162,46 @@ def _port_number(value: Any, label: str) -> int:
     return value
 
 
-def _parse_extra_ports(desktop: dict[str, Any]) -> list[PortConfig]:
-    raw_ports = desktop.get("extra_ports", [])
+def _parse_port_configs(raw_ports: Any, label: str) -> list[PortConfig]:
     if not isinstance(raw_ports, list):
-        raise DeployError("config value desktop.extra_ports must be an array of tables")
+        raise DeployError(f"{label} must be an array of tables")
 
     ports: list[PortConfig] = []
     seen: set[tuple[str | None, int, str]] = set()
     for index, raw in enumerate(raw_ports, start=1):
+        item_label = f"{label}[{index}]"
         if not isinstance(raw, dict):
-            raise DeployError(f"desktop.extra_ports[{index}] must be a table")
+            raise DeployError(f"{item_label} must be a table")
         protocol = raw.get("protocol", "tcp")
         if protocol not in ("tcp", "udp"):
-            raise DeployError(f"desktop.extra_ports[{index}].protocol must be tcp or udp")
+            raise DeployError(f"{item_label}.protocol must be tcp or udp")
         host_ip = raw.get("host_ip")
         if host_ip is not None and (not isinstance(host_ip, str) or not host_ip.strip()):
-            raise DeployError(f"desktop.extra_ports[{index}].host_ip must be a non-empty string")
+            raise DeployError(f"{item_label}.host_ip must be a non-empty string")
+        host_ip = host_ip.strip() if host_ip is not None else None
+        if host_ip == "0.0.0.0":
+            host_ip = None
         description = raw.get("description", "")
         if not isinstance(description, str):
-            raise DeployError(f"desktop.extra_ports[{index}].description must be a string")
+            raise DeployError(f"{item_label}.description must be a string")
         port = PortConfig(
-            host_port=_port_number(raw.get("host_port"), f"desktop.extra_ports[{index}].host_port"),
-            container_port=_port_number(
-                raw.get("container_port"), f"desktop.extra_ports[{index}].container_port"
-            ),
+            host_port=_port_number(raw.get("host_port"), f"{item_label}.host_port"),
+            container_port=_port_number(raw.get("container_port"), f"{item_label}.container_port"),
             protocol=protocol,
-            host_ip=host_ip.strip() if host_ip is not None else None,
+            host_ip=host_ip,
             description=description.strip(),
         )
         key = (port.host_ip, port.host_port, port.protocol)
         if key in seen:
-            raise DeployError(
-                f"desktop.extra_ports[{index}] duplicates a previous host port mapping"
-            )
+            raise DeployError(f"{item_label} duplicates a previous host port mapping")
         seen.add(key)
         ports.append(port)
     return ports
+
+
+def _parse_extra_ports(desktop: dict[str, Any]) -> list[PortConfig]:
+    raw_ports = desktop.get("extra_ports", [])
+    return _parse_port_configs(raw_ports, "config value desktop.extra_ports")
 
 
 def load_config(path: Path) -> Config:
@@ -372,6 +377,17 @@ def inspect_container(name: str) -> dict[str, Any] | None:
     return inspected[0]
 
 
+def inspect_image(ref: str) -> dict[str, Any]:
+    proc = run(["docker", "image", "inspect", ref], capture=True)
+    try:
+        inspected = json.loads(proc.stdout or "")
+    except json.JSONDecodeError as exc:
+        raise DeployError(f"docker image inspect returned invalid JSON for {ref}") from exc
+    if not isinstance(inspected, list) or not inspected or not isinstance(inspected[0], dict):
+        raise DeployError(f"docker image inspect returned no image metadata for {ref}")
+    return inspected[0]
+
+
 def container_status(info: dict[str, Any] | None) -> str:
     if not info:
         return "absent"
@@ -402,6 +418,79 @@ def digest_from_ref(ref: str | None) -> str | None:
     return digest if DIGEST_RE.fullmatch(digest) else None
 
 
+def port_key(port: PortConfig) -> tuple[str | None, int, str]:
+    return (port.host_ip, port.host_port, port.protocol)
+
+
+def format_port(port: PortConfig) -> str:
+    prefix = f"{port.host_ip}:" if port.host_ip else ""
+    return f"{prefix}{port.host_port}:{port.container_port}/{port.protocol}"
+
+
+def docker_publish_spec(port: PortConfig) -> str:
+    return format_port(port)
+
+
+def image_declared_ports(ref: str) -> list[PortConfig]:
+    image = inspect_image(ref)
+    labels = image.get("Config", {}).get("Labels") or {}
+    if not isinstance(labels, dict):
+        return []
+    raw_ports = labels.get(IMAGE_PUBLISHED_PORTS_LABEL)
+    if raw_ports is None or raw_ports == "":
+        return []
+    if not isinstance(raw_ports, str):
+        raise DeployError(f"image label {IMAGE_PUBLISHED_PORTS_LABEL} must be a JSON string")
+    try:
+        parsed = json.loads(raw_ports)
+    except json.JSONDecodeError as exc:
+        raise DeployError(
+            f"image label {IMAGE_PUBLISHED_PORTS_LABEL} must be a JSON array of port mappings"
+        ) from exc
+    ports = _parse_port_configs(parsed, f"image label {IMAGE_PUBLISHED_PORTS_LABEL}")
+    if ports:
+        log(
+            f"image declares host-published ports via {IMAGE_PUBLISHED_PORTS_LABEL}: "
+            + ", ".join(format_port(port) for port in ports)
+        )
+    return ports
+
+
+def effective_published_ports(config: Config, image_ports: list[PortConfig]) -> list[PortConfig]:
+    sources = [
+        (
+            "desktop.host_port",
+            [
+                PortConfig(
+                    host_port=config.desktop.host_port,
+                    container_port=config.desktop.container_port,
+                    protocol="tcp",
+                    description="RustDesk hardened fork Direct IP",
+                )
+            ],
+        ),
+        ("desktop.extra_ports", config.desktop.extra_ports),
+        (f"image label {IMAGE_PUBLISHED_PORTS_LABEL}", image_ports),
+    ]
+    ports: list[PortConfig] = []
+    seen: dict[tuple[str | None, int, str], tuple[PortConfig, str]] = {}
+    for source, source_ports in sources:
+        for port in source_ports:
+            key = port_key(port)
+            previous = seen.get(key)
+            if previous:
+                previous_port, previous_source = previous
+                if previous_port.container_port != port.container_port:
+                    raise DeployError(
+                        f"host port mapping {format_port(port)} from {source} conflicts with "
+                        f"{format_port(previous_port)} from {previous_source}"
+                    )
+                continue
+            seen[key] = (port, source)
+            ports.append(port)
+    return ports
+
+
 def remove_container_if_present(name: str) -> None:
     info = inspect_container(name)
     if not info:
@@ -414,7 +503,13 @@ def remove_container_if_present(name: str) -> None:
     run(["docker", "rm", "-f", name])
 
 
-def run_container(config: Config, ref: str, *, digest: str | None) -> None:
+def run_container(
+    config: Config,
+    ref: str,
+    *,
+    digest: str | None,
+    published_ports: list[PortConfig],
+) -> None:
     config.desktop.home_dir.mkdir(parents=True, exist_ok=True)
     labels = {
         "haggai.managed": "true",
@@ -437,8 +532,6 @@ def run_container(config: Config, ref: str, *, digest: str | None) -> None:
         config.desktop.hostname,
         "--restart",
         "unless-stopped",
-        "-p",
-        f"{config.desktop.host_port}:{config.desktop.container_port}/tcp",
         "-v",
         f"{config.desktop.home_dir}:/home/user",
         "--cpus",
@@ -463,17 +556,14 @@ def run_container(config: Config, ref: str, *, digest: str | None) -> None:
         "--health-start-period",
         "90s",
     ]
-    for port in config.desktop.extra_ports:
-        if port.host_ip:
-            spec = f"{port.host_ip}:{port.host_port}:{port.container_port}/{port.protocol}"
-        else:
-            spec = f"{port.host_port}:{port.container_port}/{port.protocol}"
-        args.extend(["-p", spec])
+    for port in published_ports:
+        args.extend(["-p", docker_publish_spec(port)])
     for key, value in labels.items():
         args.extend(["--label", f"{key}={value}"])
     args.append(ref)
 
     log(f"starting {config.desktop.container_name} from {ref}")
+    log("publishing ports: " + ", ".join(format_port(port) for port in published_ports))
     proc = run(args, capture=True)
     container_id = (proc.stdout or "").strip()
     if container_id:
@@ -650,15 +740,29 @@ echo "chpasswd_rc=$crc passwd_status=$st" >>/home/user/.haggai_linux_pw.log
     log("Linux/sudo password set")
 
 
-def assert_host_port_listening(config: Config) -> None:
-    proc = run(["ss", "-ltn"], capture=True)
-    needle = f":{config.desktop.host_port}"
-    for line in (proc.stdout or "").splitlines():
+def _ss_has_listener(output: str, port: PortConfig) -> bool:
+    needle = f":{port.host_port}"
+    for line in output.splitlines():
         fields = line.split()
         if len(fields) >= 4 and fields[3].endswith(needle):
-            log(f"host port {config.desktop.host_port}/tcp is listening")
-            return
-    raise DeployError(f"host port {config.desktop.host_port}/tcp is not listening")
+            return True
+    return False
+
+
+def assert_host_ports_listening(ports: list[PortConfig]) -> None:
+    missing: list[PortConfig] = []
+    for protocol, command in (("tcp", ["ss", "-ltn"]), ("udp", ["ss", "-lun"])):
+        protocol_ports = [port for port in ports if port.protocol == protocol]
+        if not protocol_ports:
+            continue
+        proc = run(command, capture=True)
+        output = proc.stdout or ""
+        missing.extend(port for port in protocol_ports if not _ss_has_listener(output, port))
+    if missing:
+        raise DeployError(
+            "host ports are not listening: " + ", ".join(format_port(port) for port in missing)
+        )
+    log("host ports are listening: " + ", ".join(format_port(port) for port in ports))
 
 
 def deploy_digest(config: Config, digest: str) -> dict[str, Any]:
@@ -669,14 +773,21 @@ def deploy_digest(config: Config, digest: str) -> dict[str, Any]:
     current_ref = container_config_image(current)
     if is_running_and_healthy(current) and current_ref == ref:
         try:
-            assert_host_port_listening(config)
-        except DeployError:
-            log(f"{config.desktop.container_name} is running {ref}, but the host port is not correct; recreating it")
+            image_ports = image_declared_ports(ref)
+            published_ports = effective_published_ports(config, image_ports)
+            assert_host_ports_listening(published_ports)
+        except DeployError as exc:
+            log(
+                f"{config.desktop.container_name} is running {ref}, but the host ports are "
+                f"not verifiably correct ({exc}); recreating it"
+            )
         else:
             log(f"{config.desktop.container_name} is already running {ref}")
             return {"changed": False, "image": config.desktop.image, "digest": digest}
 
     docker_login_and_pull(config, ref)
+    image_ports = image_declared_ports(ref)
+    published_ports = effective_published_ports(config, image_ports)
 
     previous_ref = current_ref
     previous_digest = digest_from_ref(previous_ref)
@@ -685,20 +796,26 @@ def deploy_digest(config: Config, digest: str) -> dict[str, Any]:
 
     remove_container_if_present(config.desktop.container_name)
     try:
-        run_container(config, ref, digest=digest)
+        run_container(config, ref, digest=digest, published_ports=published_ports)
         provision_passwords(config)
         wait_for_health(config)
-        assert_host_port_listening(config)
+        assert_host_ports_listening(published_ports)
     except Exception as exc:
         log(f"deployment of {ref} failed: {exc}")
         remove_container_if_present(config.desktop.container_name)
         if previous_ref:
             log(f"rolling back to {previous_ref}")
             try:
-                run_container(config, previous_ref, digest=previous_digest)
+                previous_ports = effective_published_ports(config, image_declared_ports(previous_ref))
+                run_container(
+                    config,
+                    previous_ref,
+                    digest=previous_digest,
+                    published_ports=previous_ports,
+                )
                 provision_passwords(config)
                 wait_for_health(config)
-                assert_host_port_listening(config)
+                assert_host_ports_listening(previous_ports)
             except Exception as rollback_exc:
                 raise DeployError(
                     f"deployment failed and rollback to {previous_ref} also failed: "
